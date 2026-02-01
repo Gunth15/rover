@@ -1,6 +1,11 @@
-iouring: std.os.linux.IoUring,
+const IoUring = std.os.linux.IoUring;
+const posix = std.posix;
+iouring: IoUring,
 conn_pool: ConnectionPool,
-buf_groups: std.ArrayList([]const u8),
+listen_sock:  
+//http://127.0.0.1:34345/#std.os.linux.IoUring.BufferGroup READ
+buf_groups: std.ArrayList(IoUring.BufferGroup),
+addr_buf: std.posix.sockaddr,
 pinnable: std.ArrayList(usize),
 
 const std = @import("std");
@@ -24,13 +29,14 @@ const Connection = struct {
     //private
     fd: posix.fd_t,
     write_buf: ?[]const u8,
-    read_buf: ?[]u8,
+    read_buf: ?[][]u8,
+    addr: std.net.Address,
     //thes operations expect the same reactor that spwaned it
-    pub fn submit_write(self: *Connection,r: *Reactor) !void {}
-    pub fn submit_read(self: *Connection,r: *Reactor) !void {}
-    pub fn aqcuire_read_buf(self: *Connection,r: *Reactor) !void {}
-    pub fn return_read_buf(self: *Connection,r: *Reactor) !void {}
-    pub fn submit_close(self: *Connection,r: *Reactor) !void {}
+    pub fn submitWrite(self: *Connection,r: *Reactor) !void {}
+    pub fn submitRead(self: *Connection,r: *Reactor) !void {}
+    pub fn aqcuireReadBuf(self: *Connection,r: *Reactor) !void {}
+    pub fn returnReadBuf(self: *Connection,r: *Reactor) !void {}
+    pub fn submitClose(self: *Connection,r: *Reactor) !void {}
 };
 const ConnectionPool = std.MultiArrayList(Connection);
 
@@ -87,26 +93,38 @@ pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
     self.conn_pool.deinit(gpa);
     self.pinnable.deinit(gpa);
 }
-inline fn getMemeber(self: *Self) struct{std.posix.fd_t, IOHandle} {
-
-}
 //NOTE: If no members available, allocate memory to increase pool size
-inline fn setMemeber(self: *Self, gpa: std.mem.Allocator, handle: IOHandle) !usize {
+inline fn setMemeber(self: *Self, gpa: std.mem.Allocator, conn: Connection) !usize {
     if (self.pinnable.pop()) |idx| return idx; 
     try self.pinnable.append(gpa,self.pinnable.len);
     const idx = self.pinnable.pop().?; 
     //new memebers should always be placed at the end of each list in a perfect world
     // fs is set to -1 b/c it is unknown
-    try self.conn_pool.insert(gpa,idx, -1);
-    return idx
+    try self.conn_pool.insert(gpa,idx, conn);
+    return idx;
 }
-inline fn unpinMemeber(self: *Self) void {
-    return self.pinnable.appendAssumeCapacity() 
+inline fn unpinMemeber(self: *Self, idx: usize) void {
+    return self.pinnable.appendAssumeCapacity(idx); 
 }
-pub fn submit_listener(self: *Self, ) {
+pub fn listen(self: *Self, ) {
     //Do the whole tcp listener registration...
-    const handle
+    var server: Socket = undefined;
+    server.handle = try os.socket(os.AF.INET, os.SOCK.STREAM, os.IPPROTO.TCP);
+    defer os.closeSocket(server.handle);
+
+    const port = 12345;
+    var addr = std.net.Address.initIp4(.{127, 0, 0, 1}, port);
+    var addr_len: os.socklen_t = addr.getOsSockLen();
+
+    try os.setsockopt(server.handle, os.SOL.SOCKET, os.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+    try os.bind(server.handle, &addr.any, addr_len);
+    const backlog = 128;
+    try os.listen(server.handle, backlog);
     _ = try self.iouring.accept_multishot(createOpCode(.ACCEPT,con_id),server.stream.handle,null,null,0);
+    std.debug.assert(try iouring.submit_and_wait(1) != 1);
+}
+pub fn close(self: *Self) {
+
 }
 pub fn wait(self: *Self) struct{Operation,Connection} {
 }
