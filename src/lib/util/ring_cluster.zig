@@ -10,27 +10,28 @@ pub fn Ring(T: type, comptime Size: comptime_int) type {
     return struct {
         const Self = @This();
         pub const MASK = Size - 1;
-        head: atomic.Value(usize) align(atomic.cache_line) = .init(0),
-        tail: atomic.Value(usize) align(atomic.cache_line) = .init(0),
+        const Cursor = struct { v: atomic.Value(usize) = .init(0), _padding: [atomic.cache_line - @sizeOf(atomic.Value(usize))]u8 = undefined };
+        head: Cursor align(atomic.cache_line) = .{},
+        tail: Cursor align(atomic.cache_line) = .{},
         //Fit on four cache lines
         data: [Size]T = undefined,
 
         pub fn enqueue(q: *Self, data: T) error{RingFull}!void {
-            const tail = q.tail.load(.acquire);
+            const tail = q.tail.v.load(.acquire);
             const index = tail & MASK;
             //Can only load use n-1 elemnts in the array for sake of simplicity
             //should be negligable
-            if (tail - q.head.load(.acquire) >= q.data.len) return error.RingFull;
+            if (tail - q.head.v.load(.acquire) >= q.data.len) return error.RingFull;
             q.data[index] = data;
-            q.tail.store(tail + 1, .release);
+            q.tail.v.store(tail + 1, .release);
         }
         pub fn dequeue(q: *Self) ?T {
-            const head = q.head.load(.acquire);
-            if (head == q.tail.load(.acquire)) return null;
+            const head = q.head.v.load(.acquire);
+            if (head == q.tail.v.load(.acquire)) return null;
             //Can only load use n-1 elemnts in the array for sake of simplicity
             //should be negligable
             const val = q.data[head & MASK];
-            q.head.store(head + 1, .release);
+            q.head.v.store(head + 1, .release);
             return val;
         }
     };
@@ -49,15 +50,15 @@ pub fn Cluster(Submission: type, Completion: type, RingCount: comptime_int, Ring
         pub fn pullSubmissions(c: *Self, id: usize, submission: []Submission) []Submission {
             if (submission.len == 0) return submission;
             var sq = &c.submission_pool[id];
-            const head = sq.head.load(.acquire);
-            const tail = sq.tail.load(.acquire);
+            const head = sq.head.v.load(.acquire);
+            const tail = sq.tail.v.load(.acquire);
             const entries: usize = tail - head;
 
             const dequeueable = if (entries > submission.len) submission.len else entries;
             for (0..dequeueable) |i| {
                 submission[i] = sq.data[(head + i) & SubmissionRing.MASK];
             }
-            sq.head.store(head + dequeueable, .release);
+            sq.head.v.store(head + dequeueable, .release);
             return submission[0..dequeueable];
         }
     };

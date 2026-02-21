@@ -104,7 +104,7 @@ pub const Operation = union(enum) {
     openat: struct {
         fd: linux.fd_t,
         path: []const u8,
-        flags: u32,
+        flags: linux.O,
         mode: linux.mode_t,
     },
     read: struct {
@@ -136,33 +136,35 @@ pub const Completion = union(enum) {
     accept: AcceptError!std.net.Stream.Handle,
     close: void,
     openat: OpenError!std.fs.File.Handle,
-    read: ReadError![]u8,
-    write: WriteError![]const u8,
-    send: SendError![]const u8,
+    read: ReadError!usize,
+    write: WriteError!usize,
+    send: SendError!usize,
 
     fn from_operation(op: Operation, cqe: linux.io_uring_cqe) Completion {
         return switch (op) {
             .accept => {
-                Completion{ .accept = switch (cqe.err()) {
-                    .SUCCESS => @as(std.net.Stream.Handle, cqe.res),
-                    .AGAIN => AcceptError.WouldBlock,
-                    .WOULDBLOCK => AcceptError.WouldBlock,
-                    .CONNABORTED => AcceptError.ConnectionAborted,
-                    .INTR => AcceptError.Interrupted,
-                    .INVAL => AcceptError.InvalidArgument,
-                    .MFILE => AcceptError.TooManyOpenFiles,
-                    .NFILE => AcceptError.SystemFileLimit,
-                    .NOBUFS => AcceptError.NoBufferSpace,
-                    .NOMEM => AcceptError.OutOfMemory,
-                    .NOTSOCK => AcceptError.NotSocket,
-                    .OPNOTSUPP => AcceptError.OperationNotSupported,
-                    .BADF => AcceptError.InvalidFileDescriptor,
-                    .PROTO => AcceptError.ProtocolError,
-                    else => |e| posix.unexpectedErrno(e),
-                } };
+                return Completion{
+                    .accept = switch (cqe.err()) {
+                        .SUCCESS => @as(std.net.Stream.Handle, cqe.res),
+                        .AGAIN => AcceptError.WouldBlock,
+                        //.WOULDBLOCK => AcceptError.WouldBlock,
+                        .CONNABORTED => AcceptError.ConnectionAborted,
+                        .INTR => AcceptError.Interrupted,
+                        .INVAL => AcceptError.InvalidArgument,
+                        .MFILE => AcceptError.TooManyOpenFiles,
+                        .NFILE => AcceptError.SystemFileLimit,
+                        .NOBUFS => AcceptError.NoBufferSpace,
+                        .NOMEM => AcceptError.OutOfMemory,
+                        .NOTSOCK => AcceptError.NotSocket,
+                        .OPNOTSUPP => AcceptError.OperationNotSupported,
+                        .BADF => AcceptError.InvalidFileDescriptor,
+                        .PROTO => AcceptError.ProtocolError,
+                        else => |e| posix.unexpectedErrno(e),
+                    },
+                };
             },
             .openat => {
-                Completion{ .openat = switch (cqe.err()) {
+                return Completion{ .openat = switch (cqe.err()) {
                     .SUCCESS => @as(std.fs.File.Handle, cqe.res),
                     .ACCES => OpenError.AccessDenied,
                     .PERM => OpenError.PermissionDenied,
@@ -187,83 +189,91 @@ pub const Completion = union(enum) {
                     else => |e| posix.unexpectedErrno(e),
                 } };
             },
-            .read => |o| {
-                Completion{ .read = switch (cqe.err()) {
-                    .SUCCESS => {
-                        const read = @as(usize, @intCast(cqe.res));
-                        o.buffer[0..read];
+            .read => {
+                return Completion{
+                    .read = switch (cqe.err()) {
+                        .SUCCESS => @as(usize, @intCast(cqe.res)),
+                        .AGAIN => ReadError.WouldBlock,
+                        //.WOULDBLOCK => ReadError.WouldBlock,
+                        .BADF => ReadError.InvalidFileDescriptor,
+                        .FAULT => ReadError.MemoryFault,
+                        .INTR => ReadError.Interrupted,
+                        .INVAL => ReadError.InvalidArgument,
+                        .IO => ReadError.IoError,
+                        .ISDIR => ReadError.IsDirectory,
+                        .NOMEM => ReadError.OutOfMemory,
+                        .NOBUFS => ReadError.NoBufferSpace,
+                        else => |e| posix.unexpectedErrno(e),
                     },
-                    .AGAIN => ReadError.WouldBlock,
-                    .WOULDBLOCK => ReadError.WouldBlock,
-                    .BADF => ReadError.InvalidFileDescriptor,
-                    .FAULT => ReadError.MemoryFault,
-                    .INTR => ReadError.Interrupted,
-                    .INVAL => ReadError.InvalidArgument,
-                    .IO => ReadError.IoError,
-                    .ISDIR => ReadError.IsDirectory,
-                    .NOMEM => ReadError.OutOfMemory,
-                    .NOBUFS => ReadError.NoBufferSpace,
-                    else => |e| posix.unexpectedErrno(e),
-                } };
+                };
             },
-            .send => |o| {
-                Completion{ .send = switch (cqe.err()) {
-                    .SUCCESS => {
-                        const sent = @as(usize, @intCast(cqe.res));
-                        o.buffer[sent..];
+            .send => {
+                return Completion{
+                    .send = switch (cqe.err()) {
+                        .SUCCESS => @as(usize, @intCast(cqe.res)),
+                        .AGAIN => SendError.WouldBlock,
+                        //.WOULDBLOCK => SendError.WouldBlock,
+                        .BADF => SendError.InvalidFileDescriptor,
+                        .CONNRESET => SendError.ConnectionReset,
+                        .DESTADDRREQ => SendError.DestinationRequired,
+                        .FAULT => SendError.MemoryFault,
+                        .INTR => SendError.Interrupted,
+                        .INVAL => SendError.InvalidArgument,
+                        .IO => SendError.IoError,
+                        .NOBUFS => SendError.NoBufferSpace,
+                        .NOMEM => SendError.OutOfMemory,
+                        .NOTCONN => SendError.NotConnected,
+                        .NOTSOCK => SendError.NotSocket,
+                        .OPNOTSUPP => SendError.OperationNotSupported,
+                        .PIPE => SendError.BrokenPipe,
+                        .MSGSIZE => SendError.MessageTooLarge,
+                        else => |e| posix.unexpectedErrno(e),
                     },
-                    .AGAIN => SendError.WouldBlock,
-                    .WOULDBLOCK => SendError.WouldBlock,
-                    .BADF => SendError.InvalidFileDescriptor,
-                    .CONNRESET => SendError.ConnectionReset,
-                    .DESTADDRREQ => SendError.DestinationRequired,
-                    .FAULT => SendError.MemoryFault,
-                    .INTR => SendError.Interrupted,
-                    .INVAL => SendError.InvalidArgument,
-                    .IO => SendError.IoError,
-                    .NOBUFS => SendError.NoBufferSpace,
-                    .NOMEM => SendError.OutOfMemory,
-                    .NOTCONN => SendError.NotConnected,
-                    .NOTSOCK => SendError.NotSocket,
-                    .OPNOTSUPP => SendError.OperationNotSupported,
-                    .PIPE => SendError.BrokenPipe,
-                    .MSGSIZE => SendError.MessageTooLarge,
-                    else => |e| posix.unexpectedErrno(e),
-                } };
+                };
             },
-            .write => |o| {
-                Completion{ .write = switch (cqe.err()) {
-                    .SUCCESS => {
-                        const wrote = @as(usize, @intCast(cqe.res));
-                        o.buffer[wrote..];
+            .write => {
+                return Completion{
+                    .write = switch (cqe.err()) {
+                        .SUCCESS => @as(usize, @intCast(cqe.res)),
+                        .AGAIN => WriteError.WouldBlock,
+                        //.WOULDBLOCK => WriteError.WouldBlock,
+                        .BADF => WriteError.InvalidFileDescriptor,
+                        .FAULT => WriteError.MemoryFault,
+                        .INTR => WriteError.Interrupted,
+                        .INVAL => WriteError.InvalidArgument,
+                        .IO => WriteError.IoError,
+                        .NOSPC => WriteError.NoSpaceLeft,
+                        .PIPE => WriteError.BrokenPipe,
+                        .DQUOT => WriteError.QuotaExceeded,
+                        .FBIG => WriteError.FileTooLarge,
+                        .NOMEM => WriteError.OutOfMemory,
+                        .NOBUFS => WriteError.NoBufferSpace,
+                        else => |e| posix.unexpectedErrno(e),
                     },
-                    .AGAIN => WriteError.WouldBlock,
-                    .WOULDBLOCK => WriteError.WouldBlock,
-                    .BADF => WriteError.InvalidFileDescriptor,
-                    .FAULT => WriteError.MemoryFault,
-                    .INTR => WriteError.Interrupted,
-                    .INVAL => WriteError.InvalidArgument,
-                    .IO => WriteError.IoError,
-                    .NOSPC => WriteError.NoSpaceLeft,
-                    .PIPE => WriteError.BrokenPipe,
-                    .DQUOT => WriteError.QuotaExceeded,
-                    .FBIG => WriteError.FileTooLarge,
-                    .NOMEM => WriteError.OutOfMemory,
-                    .NOBUFS => WriteError.NoBufferSpace,
-                    else => |e| posix.unexpectedErrno(e),
-                } };
+                };
             },
+            .close => return Completion{ .close = {} },
         };
     }
 };
 
-pub const Transaction = union(enum) {
-    pending: Operation,
-    completion: Completion,
+pub const Transaction = struct {
+    context: *anyopaque,
+    status: union(enum) {
+        pending: Operation,
+        complete: Completion,
+    },
+    pub fn create(context: *anyopaque, op: Operation) Transaction {
+        return .{ .context = context, .status = .{ .pending = op } };
+    }
+    pub fn complete(t: *const Transaction, T: type) struct { *T, Completion } {
+        const context: *T = @ptrCast(@alignCast(t.context));
+        return .{ context, t.status.complete };
+    }
 };
 
 pub fn init(options: Options) !IO {
-    const iouring: IoUring = init(options.entries, options.flags) catch return error.InitializationFailed;
+    const iouring = IoUring.init(options.entries, options.flags) catch return error.InitializationFailed;
     return .{
         .iouring = iouring,
     };
@@ -274,25 +284,31 @@ pub fn deinit(self: *IO) void {
 
 pub fn submit(
     self: *IO,
-    transction: *Transaction,
-) error{IOFull}!void {
-    std.debug.assert(transction == .pending);
-    _ = switch (transction.pending) {
-        .accept => |a| self.iouring.accept_multishot(@intFromPtr(transction), a.fd, a.addr.any, a.addr.getOsSockLen(), a.flags),
-        .openat => |o| self.iouring.openat(@intFromPtr(transction), o.fd, o.path, o.flags, o.mode),
-        .close => |c| self.iouring.close(@intFromPtr(transction), c.fd),
-        .read => |r| self.iouring.read(@intFromPtr(transction), r.fd, r.buffer, r.offset),
-        .send => |s| self.iouring.send(@intFromPtr(transction), s.fs, s.buffer, s.flags),
-        .write => |w| self.iouring.write(@intFromPtr(transction), w.fd, w.buffer, w.offset),
+    transaction: *Transaction,
+) error{ IOFull, PathOverFlow }!void {
+    std.debug.assert(transaction.status == .pending);
+    _ = sqe: switch (transaction.status.pending) {
+        .accept => |a| self.iouring.accept_multishot(@intFromPtr(transaction), a.fd, @constCast(&a.addr.any), @constCast(&a.addr.getOsSockLen()), a.flags),
+        .openat => |o| {
+            //prave you dont have a path larger than 256
+            var buf: [256:0]u8 = undefined;
+            const path_z = std.fmt.bufPrintZ(&buf, "{s}", .{o.path}) catch return error.PathOverFlow;
+            break :sqe self.iouring.openat(@intFromPtr(transaction), o.fd, path_z, o.flags, o.mode);
+        },
+        .close => |c| self.iouring.close(@intFromPtr(transaction), c.fd),
+        .read => |r| self.iouring.read(@intFromPtr(transaction), r.fd, .{ .buffer = r.buffer }, r.offset),
+        .send => |s| self.iouring.send(@intFromPtr(transaction), s.socket, s.buffer, s.flags),
+        .write => |w| self.iouring.write(@intFromPtr(transaction), w.fd, w.buffer, w.offset),
     } catch return error.IOFull;
 }
 pub fn flush(self: *IO, transactions: []*Transaction) ![]*Transaction {
-    const cqes: [config.io_ring_size * 4]linux.io_uring_cqe = undefined;
+    var cqes: [config.io_ring_size * 4]linux.io_uring_cqe = undefined;
     _ = try self.iouring.submit();
-    const len = try self.iouring.copy_cqes(&cqes, 0);
+    const len = try self.iouring.copy_cqes(&cqes, 1);
     for (cqes[0..len], 0..) |cqe, i| {
-        var transaction = @as(*Transaction, cqe.user_data);
-        transaction.completion = Completion.from_operation(transaction.pending, cqe);
+        var transaction: *Transaction = @ptrFromInt(cqe.user_data);
+        const comp = Completion.from_operation(transaction.status.pending, cqe);
+        transaction.status = .{ .complete = comp };
         transactions[i] = transaction;
     }
     return transactions[0..len];
