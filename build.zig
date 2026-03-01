@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     lib_options.addOption(usize, "io_ring_size", ring_size);
 
     const lib_module = b.createModule(.{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -32,12 +32,7 @@ pub fn build(b: *std.Build) void {
 
     //test
     const test_step = b.step("test", "Test Rover");
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/lib/lib.zig"),
-        .target = target,
-    });
-    test_module.addOptions("config", lib_options);
-    const unit_tests = b.addTest(.{ .root_module = test_module });
+    const unit_tests = b.addTest(.{ .root_module = lib_module });
     const run_unit_test = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_test.step);
 
