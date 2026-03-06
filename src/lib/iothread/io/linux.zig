@@ -22,7 +22,7 @@ const Completion = interface.Completion;
 const Submission = interface.Submission;
 
 pub fn init(options: interface.Options) !IO {
-    const iouring = IoUring.init(options.entries, 0) catch return error.InitializationFailed;
+    const iouring = IoUring.init(options.entries, linux.IORING_SETUP_SINGLE_ISSUER) catch return error.InitializationFailed;
     var uring: IO = .{
         .iouring = iouring,
         .eventfd = @intCast(std.os.linux.eventfd(0, 0)),

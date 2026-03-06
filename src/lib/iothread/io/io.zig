@@ -40,6 +40,7 @@ pub inline fn submit(self: *Io, sub: *Event) error{ IOFull, PathTooLong }!void {
 pub inline fn flush(self: *Io, events: []*Event) error{UnableToFlush}![]*Event {
     return self.impl.flush(events);
 }
+
 pub inline fn wake(self: *Io) void {
     return self.impl.wake();
 }

@@ -1,6 +1,5 @@
 //This file contains the public interface that a OS needs to implement to work correctly
 const std = @import("std");
-const config = @import("config");
 const buitin = @import("builtin");
 const IoUring = std.os.linux.IoUring;
 const Address = std.net.Address;
@@ -14,7 +13,7 @@ pub const Handle = switch (buitin.os.tag) {
 
 pub const Options = struct {
     //Linux only(possibly also mac)
-    entries: u16 = config.io_ring_size * 4,
+    entries: u16 = 256,
 };
 
 pub const OpenError = error{
@@ -119,7 +118,7 @@ pub const SendOptions = struct {
     fastopend: bool = false,
 };
 
-//Operation to perform
+///Operation to perform
 pub const Operation = union(enum) {
     accept: struct {
         handle: Handle,
@@ -150,7 +149,7 @@ pub const Operation = union(enum) {
     },
 };
 
-//Return union(negligable size diffrence)
+///Return union(negligable size diffrence)
 pub const CompletionReturn = union(enum) {
     accept: AcceptError!Handle,
     close: void,
@@ -160,33 +159,57 @@ pub const CompletionReturn = union(enum) {
     send: SendError!usize,
 };
 
-//submitted to IO
-pub const Submission = struct {
-    context: *anyopaque,
-    op: Operation,
-};
-//returned from IO
-pub const Completion = struct {
-    context: *anyopaque,
-    ret: CompletionReturn,
-    pub fn formContext(c: *const Completion, T: type) *T {
-        return @ptrCast(@alignCast(c.context));
-    }
-};
-//Intermediate state of  a io request Submission -> IoEvent(internal) -> Completion
-pub const Status = union(enum) { pending: Submission, complete: Completion };
+///Intermediate state of  a io request Submission -> IoEvent(internal) -> Completion
+pub const Status = union(enum) { pending: Operation, complete: CompletionReturn };
 pub const Event = struct {
-    queue_id: usize,
+    context: *anyopaque,
     status: Status,
-    next: ?*Event = null,
-    pub inline fn fromSubmission(sub: *const Submission, queue_id: usize) Event {
-        return .{
-            .queue_id = queue_id,
-            .status = .{ .pending = sub },
+    pub inline fn openat(context: *anyopaque, handle: Handle, path: []u8, options: OpenOptions) Event {
+        const submission: Operation = .{
+            .openat = .{
+                .handle = handle,
+                .path = path,
+                .options = options,
+            },
         };
+        return .{ .context = context, .status = .{ .pending = submission } };
     }
-    pub inline fn toCompletion(event: *const Event) Completion {
-        std.debug.assert(event.status == .complete);
-        return event.status.complete;
+    pub inline fn read(context: *anyopaque, handle: Handle, buffer: []u8, offset: u64) Event {
+        const submission: Operation = .{
+            .read = .{
+                .buffer = buffer,
+                .handle = handle,
+                .offset = offset,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
+    pub inline fn write(context: *anyopaque, handle: Handle, buffer: []const u8, offset: u64) Event {
+        const submission: Operation = .{
+            .write = .{
+                .handle = handle,
+                .buffer = buffer,
+                .offset = offset,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
+    pub inline fn send(context: *anyopaque, handle: Handle, buffer: []const u8, options: SendOptions) Event {
+        const submission: Operation = .{
+            .send = .{
+                .handle = handle,
+                .buffer = buffer,
+                .options = options,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
+    pub inline fn close(context: *anyopaque, handle: Handle) Event {
+        const submission: Operation = .{
+            .close = .{
+                .handle = handle,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
     }
 };
