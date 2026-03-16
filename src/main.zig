@@ -10,27 +10,31 @@ const MAXEVENTS_PER_CONNECTION = 2;
 const MAXEVENTS = MAXCONNECTIONS + MAXCONNECTIONS * MAXEVENTS_PER_CONNECTION;
 
 const ConnectionContext = struct {
-    arena: std.heap.ArenaAllocator,
+    //WARNING: Fields managed by handle_connection process
+    handle: Io.Handle,
     req: HttpParser.Request,
+    arena: std.heap.ArenaAllocator,
     lua: @compileError("TODO: add lua coroutine here"),
-    status: Io.CompletionReturn,
+
+    //NOTE: handle_connection is treated as a separate process.
+    //The state is treated as the message passed to the handle_connection process that tells it to continue operations on the connection.
+    pub fn handle_connection(ctxt: *ConnectionContext, state: Io.CompletionReturn) void {
+        switch (state) {
+            .accept => |ret| {},
+            .openat => |ret|{},
+            .close => {
+                //deinitialize everything
+            },
+            .send => |ret|{},
+            .write => |ret| {},
+            .read => |ret|{},
+        }
+    }
 };
 
 const ContextPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
 const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
 
-pub fn handle_connection(ctxt: *ConnectionContext) void {
-    switch (ctxt.status) {
-        .accept => |ret| {},
-        .openat => |ret|{},
-        .close => {
-            //deinitialize everything
-        },
-        .send => |ret|{},
-        .write => |ret| {},
-        .read => |ret|{},
-    }
-}
 
 //TODO: use coroutines instead
 pub fn main() !void {
@@ -57,7 +61,7 @@ pub fn main() !void {
     //event_loop
     switch () {
     }
-    //  accept -> create new connection and start new coroutine(stackless)
+    //  accept -> create new context and start new coroutine(stackless)
     //  else -> change context status and resume relevent coroutine
 
     io.flush(events);

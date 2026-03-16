@@ -4,23 +4,27 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const ring_size = b.option(usize, "io_ring_size", "Size of ring buffers used for internal I/O thread communication(default is 64)") orelse 64;
-
     //lib
-    const lib_options = b.addOptions();
-    lib_options.addOption(usize, "io_ring_size", ring_size);
-
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    lib_module.addOptions("config", lib_options);
-    const lib = b.addLibrary(.{ .name = "librover", .linkage = .static, .root_module = lib_module });
+    const lib = b.addLibrary(.{
+        .name = "librover",
+        .linkage = .static,
+        .root_module = lib_module,
+    });
+
     //libpco
     lib.addCSourceFile(.{ .file = b.path("./src/lib/httpparser/picohttpparser.c") });
     lib.addIncludePath(b.path("./src/lib/httpparser"));
+
+    //link lua
+    const lua_dep = b.dependency("lua", .{});
+    const lua_lib = lua_dep.artifact("lua");
+    lib.linkLibrary(lua_lib);
     b.installArtifact(lib);
 
     //exe
@@ -43,5 +47,6 @@ pub fn build(b: *std.Build) void {
     const run_exe = b.addRunArtifact(exe);
     const run_step = b.step("run", "Run Rover");
     run_step.dependOn(&unit_tests.step);
+    run_step.dependOn(&lib.step);
     run_step.dependOn(&run_exe.step);
 }
