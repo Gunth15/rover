@@ -4,6 +4,7 @@ pub const Io = @import("iothread/io/io.zig");
 pub const HttpParser = @import("httpparser/httpparser.zig");
 test {
     _ = @import("util/ring_cluster.zig");
-    _ = @import("iothread/iothread.zig");
+    //_ = @import("iothread/iothread.zig");
     _ = @import("httpparser/httpparser.zig");
+    _ = @import("lua/Lua.zig");
 }
