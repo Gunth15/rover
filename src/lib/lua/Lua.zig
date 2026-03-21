@@ -123,7 +123,7 @@ pub inline fn push(l: *LuaState, arg: anytype) void {
         .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else structToTable(arg),
         .int, .comptime_int => c.lua_pushinteger(l.state, arg),
         .float, .comptime_float => c.lua_pushnumber(l.state, arg),
-        .bool => c.lua_pushboolean(l.state, @as(c_int, arg)),
+        .bool => c.lua_pushboolean(l.state, if (arg) 1 else 0),
         .null => c.lua_pushnil(l.state),
         .optional => if (arg) |val| l.push(val) else c.lua_pushnil(l.state),
         //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
@@ -157,28 +157,37 @@ pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
             comptime std.debug.assert(info.signedness == .signed);
             var isnum: c_int = 0;
             const int = @as(Integer, c.lua_tointegerx(l.state, @intCast(index), &isnum));
-            return if (isnum == 1) @as(T, int) else error.ExpectedInt;
+            return if (isnum > 0) @intCast(int) else error.ExpectedInt;
         },
         .comptime_int => {
             var isnum: c_int = 0;
             const int = @as(Integer, c.lua_tointegerx(l.state, @intCast(index), &isnum));
-            return if (isnum == 1) @as(T, int) else error.ExpectedInt;
+            return if (isnum > 0) @intCast(int) else error.ExpectedInt;
         },
         .float, .comptime_float => {
             var isnum: c_int = 0;
             const f = @as(Float, c.lua_tonumberx(l.state, @intCast(index), &isnum));
             return if (isnum == 1) @as(f64, f) else error.ExpectedFloat;
         },
-        .bool => return if (c.lua_isboolean(l.state, index)) @as(bool, c.lua_toboolean(l.state, index)) else error.ExpectedBool,
-        .null => return if (c.lua_isnoneornil(l.state, index)) null else error.ExpectedNull,
-        .optional => |info| return if (c.lua_isnoneornil(l.state, index)) null else l.to(info.child, index),
+        .bool => {
+            const n: c_int = @intCast(index);
+            if (c.lua_isboolean(l.state, n)) return if (c.lua_toboolean(l.state, n) > 0) true else false else return error.ExpectedBool;
+        },
+        .null => {
+            const n: c_int = @intCast(index);
+            return if (c.lua_isnoneornil(l.state, n)) null else error.ExpectedNull;
+        },
+        .optional => |info| {
+            const n: c_int = @intCast(index);
+            return if (c.lua_isnoneornil(l.state, n)) null else l.to(info.child, index);
+        },
         .pointer => |info| {
             //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
             comptime if (info.size == .many and info.child == u8) {
                 var len = 0;
-                const ptr = c.lua_tolstring(l.state, index, &len);
+                const ptr = c.lua_tolstring(l.state, @intCast(index), &len);
                 return ptr[0..len];
-            } else return @ptrCast(c.lua_touserdata(l.state, index) orelse return error.ExpectedPointer);
+            } else return @ptrCast(c.lua_touserdata(l.state, @intCast(index)) orelse return error.ExpectedPointer);
         },
         .@"fn" => |info| {
             comptime if (info.params.len != 1 and info.params[0].type != *c.lua_State) @compileError("Only type" ++ @typeName(Function) ++ "is allowed to be returned as a function from lua");
@@ -414,6 +423,26 @@ test "can call basic lua function" {
 
     const int = try lua.call("test", .{ 1, 2 }, Integer);
     try std.testing.expectEqual(3, int);
+}
+
+test "Basic types" {
+    var lua: LuaState = try .init(.{ .allocator = &std.testing.allocator });
+    defer lua.deinit();
+
+    try lua.doString(
+        \\function add(a, b) return a + b end
+        \\function echo_int(x) return x end
+        \\function echo_float(x) return x end
+        \\function echo_bool(x) return x end
+    );
+
+    try std.testing.expectEqual(@as(i32, 3), try lua.call("add", .{ 1, 2 }, i32));
+
+    try std.testing.expectEqual(@as(i32, 42), try lua.call("echo_int", .{42}, i32));
+
+    try std.testing.expectEqual(@as(f64, 3.14), try lua.call("echo_float", .{3.14}, f64));
+
+    try std.testing.expectEqual(true, try lua.call("echo_bool", .{true}, bool));
 }
 
 test "register a lua function and call it" {
