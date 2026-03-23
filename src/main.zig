@@ -1,40 +1,43 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
 const Io = lib.Io;
+const Lua = lib.Lua;
 const HttpParser = lib.HttpParser;
-const Ring = lib.Ring(Io.Event, .{});
+
+const ContextPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
 const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
-
-const MAXCONNECTIONS = 200;
-const MAXEVENTS_PER_CONNECTION = 2;
-const MAXEVENTS = MAXCONNECTIONS + MAXCONNECTIONS * MAXEVENTS_PER_CONNECTION;
-
 const ConnectionContext = struct {
     //WARNING: Fields managed by handle_connection process
     handle: Io.Handle,
     req: HttpParser.Request,
     arena: std.heap.ArenaAllocator,
-    lua: @compileError("TODO: add lua coroutine here"),
+    lua: Lua,
+    next: ?*ConnectionContext,
 
-    //NOTE: handle_connection is treated as a separate process.
-    //The state is treated as the message passed to the handle_connection process that tells it to continue operations on the connection.
-    pub fn handle_connection(ctxt: *ConnectionContext, state: Io.CompletionReturn) void {
-        switch (state) {
+    const Messgage = union(enum) {
+        io: Io.CompletionReturn,
+        sql: void,
+        any: *anyopaque,
+    };
+    pub fn rec() !void {}
+    pub fn resume_ctxt(ctxt: *ConnectionContext, msg: Io.CompletionReturn) void {
+        switch (msg) {
             .accept => |ret| {},
-            .openat => |ret|{},
+            .openat => |ret| {},
             .close => {
                 //deinitialize everything
             },
-            .send => |ret|{},
+            .send => |ret| {},
             .write => |ret| {},
-            .read => |ret|{},
+            .read => |ret| {},
         }
     }
 };
 
-const ContextPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
-const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
-
+const MAXCONNECTIONS = 200;
+const MAXEVENTS_PER_CONNECTION = 1;
+const MAXEVENTS = MAXCONNECTIONS * MAXEVENTS_PER_CONNECTION;
+var SHUTDOWN = false;
 
 //TODO: use coroutines instead
 pub fn main() !void {
@@ -52,20 +55,33 @@ pub fn main() !void {
     var context_pool: ContextPool = try .initPreheated(alloc, MAXCONNECTIONS);
     defer context_pool.deinit();
 
-    const events = try alloc.alloc(*Io.Event, MAXEVENTS);
-    defer alloc.free(events);
-
     var io: Io = .init(.{});
     defer io.deinit();
 
-    //event_loop
-    switch () {
-    }
-    //  accept -> create new context and start new coroutine(stackless)
-    //  else -> change context status and resume relevent coroutine
+    const lua = try Lua.init(.{ .allocator = &alloc });
+    defer lua.deinit();
 
-    io.flush(events);
+    //TODO: make signalfd()
+    //add read event
+
+    //event_loop
+    while (!SHUTDOWN) {
+        //Flush io and try to handle immediately
+        const events = try io.flush(1);
+        while (events.next) |event| {
+            if (event.status.complete == .accept) {
+                var state: Lua = @ptrCast(@alignCast(event.context));
+                var ctxt = try context_pool.create();
+                ctxt.lua = try state.newThread();
+            }
+            var ctxt: ConnectionContext = @ptrCast(@alignCast(event.context));
+            ctxt.resume_ctxt(event.status.complete);
+        }
+
+        //Flush sql buffer
+        //while (events.next) |event {}
+
+    }
 
     //do submit events-> consume completion handle events
 }
-

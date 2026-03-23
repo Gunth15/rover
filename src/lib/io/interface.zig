@@ -122,7 +122,6 @@ pub const SendOptions = struct {
 pub const Operation = union(enum) {
     accept: struct {
         handle: Handle,
-        addr: Address,
     },
     close: struct {
         handle: Handle,
@@ -160,10 +159,21 @@ pub const CompletionReturn = union(enum) {
 };
 
 ///Intermediate state of  a io request Submission -> IoEvent(internal) -> Completion
+///the next field is use to chain events like a queue
 pub const Status = union(enum) { pending: Operation, complete: CompletionReturn };
 pub const Event = struct {
     context: *anyopaque,
     status: Status,
+    //used for queue
+    next: ?*Event = null,
+    pub inline fn accept(context: *anyopaque, handle: Handle) Event {
+        const submission: Operation = .{
+            .accept = .{
+                .handle = handle,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
     pub inline fn openat(context: *anyopaque, handle: Handle, path: []u8, options: OpenOptions) Event {
         const submission: Operation = .{
             .openat = .{
@@ -197,7 +207,7 @@ pub const Event = struct {
     pub inline fn send(context: *anyopaque, handle: Handle, buffer: []const u8, options: SendOptions) Event {
         const submission: Operation = .{
             .send = .{
-                .handle = handle,
+                .socket = handle,
                 .buffer = buffer,
                 .options = options,
             },
