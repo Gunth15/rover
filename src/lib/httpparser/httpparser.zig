@@ -9,7 +9,10 @@ pub const Request = struct {
     path: []const u8,
     body: ?[]const u8,
     minor_version: u64,
-    headers: *Headers,
+    headers: Headers,
+    //size of request in bytes
+    //TODO: make this optional to handle chunck encoding
+    size: usize,
 };
 
 const ParseError = error{
@@ -19,21 +22,27 @@ const ParseError = error{
     Chunked,
     InvalidBodyLength,
     NoMultiLineSupport,
+    OutOfMemory,
 };
 //returns request with pointers to the given buffer
-pub fn parse(buffer: []const u8, headers: *Headers, previously_read: usize) ParseError!Request {
+//headers are allocated with the capacity of max_headers
+pub fn parse(buffer: []const u8, alloc: std.mem.Allocator, max_headers: usize, previously_read: usize) ParseError!Request {
     var req: Request = undefined;
     var method: [*c]const u8 = undefined;
     var method_len: usize = 0;
     var path: [*c]const u8 = undefined;
     var path_len: usize = 0;
     var minor_version: c_int = undefined;
-    var header_list: [3]libpico.phr_header = undefined;
+    var headers = Headers.empty;
+    var header_list: []libpico.phr_header = try alloc.alloc(libpico.phr_header, max_headers);
+    defer alloc.free(header_list);
+
     var header_count: usize = header_list.len;
 
-    const header_bytes = libpico.phr_parse_request(buffer.ptr, buffer.len, &method, &method_len, &path, &path_len, &minor_version, &header_list, &header_count, previously_read);
+    const header_bytes = libpico.phr_parse_request(buffer.ptr, buffer.len, &method, &method_len, &path, &path_len, &minor_version, header_list.ptr, &header_count, previously_read);
     if (header_bytes == -2) return error.PartialRequest;
     if (header_bytes == -1) return error.ParseFailure;
+    try headers.ensureUnusedCapacity(alloc, header_count);
 
     req.method = method[0..method_len];
     req.path = path[0..path_len];
@@ -48,13 +57,14 @@ pub fn parse(buffer: []const u8, headers: *Headers, previously_read: usize) Pars
         req.headers.putAssumeCapacity(name, value);
     }
 
-    const length = req.headers.get("Content-Length") orelse {
+    const content_length = req.headers.get("Content-Length") orelse {
         req.body = null;
         return req;
     };
-    const len = std.fmt.parseInt(usize, length, 10) catch return error.InvalidBodyLength;
+    const bod_length = std.fmt.parseInt(usize, content_length, 10) catch return error.InvalidBodyLength;
     const header_len: usize = @intCast(header_bytes);
-    req.body = buffer[header_len .. header_len + len];
+    req.size = header_len + bod_length;
+    req.body = buffer[header_len..req.size];
 
     const encoding = req.headers.get("Transfer-Encoding") orelse return req;
     if (std.ascii.eqlIgnoreCase("chunked", encoding)) return error.Chunked;
@@ -68,12 +78,8 @@ test "parse basic HTTP request with body" {
         "\r\n" ++
         "hello";
 
-    var headers = Headers.empty;
-    defer headers.deinit(std.testing.allocator);
-
-    try headers.ensureTotalCapacity(std.testing.allocator, 8);
-
-    const req = try parse(request, &headers, 0);
+    var req = try parse(request, std.testing.allocator, 10, 0);
+    defer req.headers.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("POST", req.method);
     try std.testing.expectEqualStrings("/hello", req.path);
@@ -84,4 +90,7 @@ test "parse basic HTTP request with body" {
 
     const body = req.body.?;
     try std.testing.expectEqualStrings("hello", body);
+
+    const req_size = req.size;
+    try std.testing.expect(request.len == req_size);
 }

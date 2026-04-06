@@ -1,5 +1,7 @@
 impl: Impl,
+queued: Queue(Event),
 
+const Queue = @import("../util/queue.zig").Queue;
 const builtin = @import("builtin");
 const interface = @import("interface.zig");
 
@@ -12,6 +14,10 @@ pub const Operation = interface.Operation;
 pub const CompletionReturn = interface.CompletionReturn;
 pub const OpenOptions = interface.OpenOptions;
 pub const SendOptions = interface.SendOptions;
+pub const AcceptError = interface.AcceptError;
+pub const SendError = interface.SendError;
+pub const ReadError = interface.ReadError;
+pub const WriteError = interface.WriteError;
 
 //Implementation must define 4 functions
 // 1. init: how to initialize async io
@@ -27,16 +33,26 @@ const Impl = switch (builtin.os.tag) {
 pub inline fn init(options: interface.Options) !Io {
     return .{
         .impl = try Impl.init(options),
+        .queued = .{},
     };
 }
 pub inline fn deinit(self: *Io) void {
     return self.impl.deinit();
 }
-pub inline fn submit(self: *Io, sub: *Event) error{ IOFull, PathTooLong }!void {
-    return self.impl.submit(sub);
+pub inline fn submit(self: *Io, sub: *Event) error{PathTooLong}!void {
+    return self.impl.submit(sub) catch |e| {
+        switch (e) {
+            error.PathTooLong => |p| return p,
+            error.IOFull => self.queued.enqueue(sub),
+        }
+    };
 }
-pub inline fn flush(self: *Io, wait_nr: u32) error{UnableToFlush}!*Event {
-    return self.impl.flush(wait_nr);
+pub inline fn flush(self: *Io, wait_nr: u32) error{UnableToFlush}!Queue(Event) {
+    const completions = self.impl.flush(wait_nr);
+    while (self.queued.dequeue()) |ev| {
+        self.submit(ev) catch unreachable;
+    }
+    return completions;
 }
 
 pub inline fn wake(self: *Io) void {
@@ -72,7 +88,8 @@ test "simple connection test" {
     var accept_ev = Event.accept(&.{}, server.stream.handle);
     try io.submit(&accept_ev);
 
-    var event = try io.flush(1);
+    var q = try io.flush(1);
+    var event = q.dequeue().?;
 
     try std.testing.expect(event.status == .complete);
     const handle = event.status.complete.accept catch |e| {
@@ -88,7 +105,8 @@ test "simple connection test" {
     var read_ev = Event.read(&c, handle, &buf, 0);
     try io.submit(&read_ev);
 
-    event = try io.flush(1);
+    q = try io.flush(1);
+    event = q.dequeue().?;
     try std.testing.expect(event.status == .complete);
 
     const context: *ctx = @ptrCast(@alignCast(event.context));
@@ -97,7 +115,8 @@ test "simple connection test" {
 
     var write_ev = Event.send(&c, handle, context.buf[0..read], .{});
     try io.submit(&write_ev);
-    event = try io.flush(1);
+    q = try io.flush(1);
+    event = q.dequeue().?;
 
     try std.testing.expect(event.status == .complete);
 

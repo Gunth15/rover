@@ -7,6 +7,7 @@ const linux = std.os.linux;
 const IoUring = std.os.linux.IoUring;
 const interface = @import("interface.zig");
 const posix = std.posix;
+const Queue = @import("../util/queue.zig").Queue;
 
 const IO = @This();
 
@@ -71,24 +72,16 @@ pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!v
         .write => |w| self.iouring.write(@intFromPtr(event), w.handle, w.buffer, w.offset),
     } catch return error.IOFull;
 }
-pub fn flush(self: *IO, wait_nr: u32) error{UnableToFlush}!*interface.Event {
+pub fn flush(self: *IO, wait_nr: u32) error{UnableToFlush}!Queue(interface.Event) {
     var cqes: [256]linux.io_uring_cqe = undefined;
     _ = self.iouring.submit() catch return error.UnableToFlush;
     const len = self.iouring.copy_cqes(&cqes, wait_nr) catch return error.UnableToFlush;
-    var tail: *Event = undefined;
-    var head: *Event = undefined;
-    for (cqes[0..len], 0..) |cqe, i| {
+    var queue: Queue(Event) = .{};
+    for (cqes[0..len]) |cqe| {
         const event: *interface.Event = fillCompletion(@ptrFromInt(cqe.user_data), cqe);
-
-        if (i == 0) {
-            tail = event;
-            head = tail;
-        } else {
-            tail.next = event;
-            tail = event;
-        }
+        queue.enqueue(event);
     }
-    return head;
+    return queue;
 }
 pub fn wake(self: *IO) void {
     const buf: u64 = 1;
