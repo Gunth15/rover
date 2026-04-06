@@ -140,7 +140,7 @@ pub inline fn push(l: *LuaState, arg: anytype) void {
 ///pointers are returned
 ///strings should be treated as refereces that will be garbage collected at some point
 ///the only function that can be returned is a generic LuaFunction
-const TypeError = error{
+pub const TypeError = error{
     ExpectedInt,
     ExpectedUnsigned,
     ExpectedFloat,
@@ -183,14 +183,14 @@ pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
         },
         .pointer => |info| {
             //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
-            comptime if (info.size == .many and info.child == u8) {
-                var len = 0;
+            if (info.size == .slice and info.child == u8) {
+                var len: usize = 0;
                 const ptr = c.lua_tolstring(l.state, @intCast(index), &len);
                 return ptr[0..len];
             } else return @ptrCast(c.lua_touserdata(l.state, @intCast(index)) orelse return error.ExpectedPointer);
         },
         .@"fn" => |info| {
-            comptime if (info.params.len != 1 and info.params[0].type != *c.lua_State) @compileError("Only type" ++ @typeName(Function) ++ "is allowed to be returned as a function from lua");
+            if (info.params.len != 1 and info.params[0].type != *c.lua_State) @compileError("Only type" ++ @typeName(Function) ++ "is allowed to be returned as a function from lua");
             return c.lua_tocfunction(l.state, index);
         },
         else => @compileError(@typeName(T) ++ "cannot be converted from lua type"),
@@ -208,9 +208,14 @@ pub fn register(l: *LuaState, name: [:0]const u8, comptime func: anytype) void {
     return c.lua_register(l.state, name, toLuaFuntcion(func));
 }
 
+pub fn openLibs(l: *LuaState) void {
+    return c.luaL_openlibs(l.state);
+}
+
 //pops n values form the stack
-pub fn pop(l: *LuaState, n: u64) void {
-    return c.lua_pop(l.state, n);
+pub fn pop(l: *LuaState, n: i64) void {
+    const int: c_int = @intCast(n);
+    return c.lua_pop(l.state, int);
 }
 //uses value at top of stck as err object
 pub fn raiseError(l: *LuaState) noreturn {
@@ -223,11 +228,14 @@ pub fn newTable(l: *LuaState) void {
 pub fn newUserData(l: *LuaState, T: type) error{OutOfMemory}!T {
     return @as(T, c.lua_newuserdatauv(l.state, @sizeOf(T), 1)) orelse error.OutOfMemory;
 }
+pub fn newUserDataRaw(l: *LuaState, size: usize) error{OutOfMemory}![]u8 {
+    return @as([]u8, c.lua_newuserdatauv(l.state, @intCast(size), 1)) orelse error.OutOfMemory;
+}
 pub fn newThread(l: *LuaState) error{OutOfMemory}!LuaState {
     return .{ .state = c.lua_newthread(l.state) orelse return error.OutOfMemory };
 }
 
-const LuaLib = struct { ?[*:0]const u8, *const anyopaque };
+const LuaLib = struct { [:0]const u8, *const anyopaque };
 
 ///creates new library
 pub fn newLib(l: *LuaState, comptime lib: []LuaLib) void {
@@ -245,14 +253,24 @@ pub fn newLib(l: *LuaState, comptime lib: []LuaLib) void {
     }
     return c.luaL_newlib(l.state, regs);
 }
-///Creates a library and a object for said lib(user must decide how to initialize)
-pub fn newObj(l: *LuaState, comptime tname: [:0]const u8, comptime lib: []LuaLib, comptime methods: []LuaLib) void {
+///Creates a object
+pub fn newObj(l: *LuaState, comptime tname: [:0]const u8, comptime methods: []LuaLib) void {
+    const meths: [methods.len + 1]c.luaL_Reg = undefined;
+    comptime {
+        for (methods, 0..) |lib_func, i| {
+            const name, const func = lib_func;
+
+            meths[i] = .{
+                .name = name.ptr,
+                .func = toLuaFuntcion(func),
+            };
+        }
+        meths[meths.len] = .{ null, null };
+    }
     //meta = newmetable()
     l.newMetaTable(tname);
     //for each function meta.key = method
     c.luaL_setfuncs(l.state, methods, 0);
-    //library functions
-    l.newLib(lib);
 }
 pub fn newMetaTable(l: *LuaState, tname: [*:0]const u8) void {
     _ = c.luaL_newmetatable(l.state, tname.ptr);
@@ -273,6 +291,9 @@ pub fn createTable(l: *LuaState, sequenced: isize, expected: isize) void {
 pub fn argCheck(l: *LuaState, cond: bool, arg: usize, msg: [*:0]const u8) void {
     _ = c.luaL_argcheck(l.state, cond, arg, msg.ptr);
 }
+pub fn Luatype(l: *LuaState, index: usize) LuaType {
+    return @enumFromInt(c.lua_type(l.state, @as(c_int, index)));
+}
 pub fn checkAny(l: *LuaState, arg: usize) void {
     c.luaL_checkany(l.state, arg);
 }
@@ -280,8 +301,12 @@ pub fn err(l: *LuaState) noreturn {
     _ = c.lua_error(l.state);
     unreachable;
 }
-pub fn fmtError(l: *LuaState, fmt: [:0]const u8, args: anytype) c_int {
+pub fn fmtError(l: *LuaState, fmt: [:0]const u8, args: anytype) noreturn {
     _ = @call(.auto, c.luaL_error, .{ l.state, fmt } ++ args);
+    unreachable;
+}
+pub fn argError(l: *LuaState, arg: usize, msg: [*:0]const u8) noreturn {
+    _ = c.luaL_argerror(l.state, @intCast(arg), msg);
     unreachable;
 }
 pub fn resumeT(l: *LuaState, from: ?*LuaState, nargs: usize, nresults: *usize) CallError!enum { OK, YIELDED } {
@@ -312,11 +337,17 @@ pub fn setI(l: *LuaState, index: isize, i: isize) void {
     c.lua_seti(l.state, @as(c_int, index), @as(c_longlong, i));
 }
 //use these for tables without metadata
-pub fn getRawI(l: *LuaState, index: isize, n: isize) void {
+pub fn getRawI(l: *LuaState, index: isize, n: isize) LuaType {
     return @enumFromInt(c.lua_rawgeti(l.state, @as(c_int, index), @as(c.lua_Integer, n)));
 }
 pub fn setRawI(l: *LuaState, index: isize, i: isize) void {
     c.lua_rawseti(l.state, @as(c_int, index), @as(c_longlong, i));
+}
+pub fn getField(l: *LuaState, index: isize, name: [:0]const u8) LuaType {
+    return @enumFromInt(c.lua_getfield(l.state, @as(c_int, index), name));
+}
+pub fn getTop(l: *LuaState) isize {
+    return @intCast(c.lua_gettop(l.state));
 }
 pub fn getGlobal(l: *LuaState, name: [:0]const u8) LuaType {
     return @enumFromInt(c.lua_getglobal(l.state, name));
@@ -330,6 +361,12 @@ pub fn toUserData(l: *LuaState, T: type, index: isize) *T {
 }
 pub fn checkStack(l: *LuaState, extra: usize) bool {
     return c.lua_checkstack(l.state, extra) != 0;
+}
+pub fn ref(l: *LuaState) c_int {
+    return c.luaL_ref(l.state, c.LUA_REGISTRYINDEX);
+}
+pub fn unref(l: *LuaState, reference: c_int) void {
+    return c.luaL_unref(l.state, c.LUA_REGISTRYINDEX, reference);
 }
 ///Assumes table is on top of the stack
 fn structFromTable(l: *LuaState, T: type) TypeError!T {
@@ -377,8 +414,10 @@ fn toLuaFuntcion(comptime func: anytype) Function {
             //get args from stack
             var args: ArgTuple = undefined;
             const fields = @typeInfo(ArgTuple).@"struct".fields;
+            const given = state.getTop();
+            if (given != fields.len - 1) return state.fmtError("Expected %d arguments, but received %d", .{ fields.len, given });
             inline for (fields[1..], 1..) |field, i| {
-                @field(args, field.name) = state.to(field.type, i) catch return state.fmtError("expected %s as argument %i", .{ @typeName(field.type), i });
+                @field(args, field.name) = state.to(field.type, i) catch return state.argError(@intCast(i), "expected" ++ @typeName(field.type));
             }
             //call function
             args.@"0" = &state;
@@ -456,6 +495,12 @@ test "register a lua function and call it" {
 
     lua.register("test", AddCB.add);
 
-    const int = try lua.call("test", .{ 1, 2 }, Integer);
+    const int = lua.call("test", .{ 1, 2 }, Integer) catch |e| {
+        const lua_err = try lua.to(String, -1);
+        lua.pop(-1);
+
+        std.debug.print("{s}\n", .{lua_err});
+        return e;
+    };
     try std.testing.expectEqual(3, int);
 }
