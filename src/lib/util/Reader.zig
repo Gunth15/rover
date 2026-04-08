@@ -7,6 +7,11 @@ buf: []u8,
 const std = @import("std");
 const Reader = @This();
 
+const Slice = struct {
+    first: []u8,
+    second: []u8,
+};
+
 pub fn init(alloc: std.mem.Allocator, n: usize) Reader {
     std.debug.assert(std.math.isPowerOfTwo(n));
     return .{
@@ -18,47 +23,45 @@ pub fn deinit(r: *Reader, alloc: std.mem.Allocator) void {
 }
 
 //returns the amount of bytes read
-pub fn peek(r: *Reader, buf: []u8) usize {
+pub fn peek(r: *Reader) Slice {
     const available = r.end - r.start;
-    const to_copy = @min(available, buf.len);
 
     const cap = r.buf.len;
     const start = r.start & (cap - 1);
 
-    const l1 = @min(to_copy, cap - start);
-    @memcpy(buf[0..l1], r.buf[start .. start + l1]);
+    const l1 = @min(available, cap - start);
+    const l2 = available - l1;
 
-    const l2 = to_copy - l1;
-    if (l2 > 0) @memcpy(buf[l1 .. l1 + l2], r.buf[0..l2]);
-
-    return to_copy;
+    return Slice{ .first = r.buf[start..l1], .second = r.buf[l1 .. l1 + l2] };
 }
 
-//fille the buffer with the given data, return how many bytes written
-pub fn fill(r: *Reader, buf: []const u8) usize {
+//returns free buffer space
+pub fn free(r: *Reader) Slice {
     const cap = r.buf.len;
     const end = r.end & (cap - 1);
 
     //free space available capacity - used
-    const free = cap - r.end - r.start;
+    const free_bytes = cap - r.end - r.start;
 
-    const to_add = @min(buf.len, free);
-
-    const l1 = @min(to_add, cap - end);
-    @memcpy(r.buf[end .. end + l1], buf[0..l1]);
-
-    const l2 = to_add - l1;
-    if (l2) @memcpy(r.buf[0..l2], buf[l1 .. l1 + l2]);
-
-    r.advanceTail(to_add);
-    return to_add;
+    const l1 = @min(free_bytes, cap - end);
+    const l2 = free_bytes - l1;
+    const slice = Slice{
+        .first = r.buf[end .. end + l1],
+        .second = r.buf[0..l2],
+    };
+    return slice;
 }
 //advance head n bytes
-pub fn advanceHead(r: *Reader, n: usize) void {
+pub fn consume(r: *Reader) Slice {
+    const slice = r.peek();
+    const n = slice.first.len + (if (slice.second) |s| s.len else 0);
+    r.consumeHead(n);
+}
+pub fn consumeHead(r: *Reader, n: usize) void {
     r.start += n;
 }
 //extend used n bytes
-pub fn advanceTail(r: *Reader, n: usize) void {
+pub fn advance(r: *Reader, n: usize) void {
     r.end += n;
 }
 

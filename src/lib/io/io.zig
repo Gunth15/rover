@@ -98,11 +98,11 @@ test "simple connection test" {
     };
 
     const ctx = struct {
-        buf: []u8,
+        buf: [1][]u8,
     };
 
     var c = ctx{ .buf = &buf };
-    var read_ev = Event.read(&c, handle, &buf, 0);
+    var read_ev = Event.read(&c, handle, &c.buf, 0);
     try io.submit(&read_ev);
 
     q = try io.flush(1);
@@ -111,9 +111,9 @@ test "simple connection test" {
 
     const context: *ctx = @ptrCast(@alignCast(event.context));
     const read = try event.status.complete.read;
-    try std.testing.expectEqualStrings("Hello", context.buf[0..read]);
+    try std.testing.expectEqualStrings("Hello", context.buf[0][0..read]);
 
-    var write_ev = Event.send(&c, handle, context.buf[0..read], .{});
+    var write_ev = Event.send(&c, handle, context.buf[0][0..read], .{});
     try io.submit(&write_ev);
     q = try io.flush(1);
     event = q.dequeue().?;

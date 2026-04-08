@@ -133,7 +133,7 @@ pub const Operation = union(enum) {
     },
     read: struct {
         handle: Handle,
-        buffer: []u8,
+        vec: [][]u8,
         offset: u64,
     },
     send: struct {
@@ -184,10 +184,10 @@ pub const Event = struct {
         };
         return .{ .context = context, .status = .{ .pending = submission } };
     }
-    pub inline fn read(context: *anyopaque, handle: Handle, buffer: []u8, offset: u64) Event {
+    pub inline fn read(context: *anyopaque, handle: Handle, vec: [][]u8, offset: u64) Event {
         const submission: Operation = .{
             .read = .{
-                .buffer = buffer,
+                .vec = vec,
                 .handle = handle,
                 .offset = offset,
             },

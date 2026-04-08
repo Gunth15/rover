@@ -59,7 +59,17 @@ pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!v
             break :sqe self.iouring.openat(@intFromPtr(event), o.handle, &path_z, flags, 0o0666);
         },
         .close => |c| self.iouring.close(@intFromPtr(event), c.handle),
-        .read => |r| self.iouring.read(@intFromPtr(event), r.handle, .{ .buffer = r.buffer }, r.offset),
+        .read => |r| {
+            std.debug.assert(r.vec.len < 16);
+            var iovecs: [16]posix.iovec = undefined;
+            for (0..iovecs.len) |i| {
+                iovecs[i] = .{
+                    .base = r.vec[i].ptr,
+                    .len = r.vec[i].len,
+                };
+            }
+            self.iouring.read(@intFromPtr(event), r.handle, .{ .iovecs = iovecs[0..r.vec.len] }, r.offset);
+        },
         .send => |s| {
             const options: interface.SendOptions = s.options;
             var flags: u32 = 0;
