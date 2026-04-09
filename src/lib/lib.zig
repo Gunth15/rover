@@ -5,9 +5,14 @@ pub const HttpParser = @import("httpparser/httpparser.zig");
 pub const Lua = @import("lua/Lua.zig");
 pub const Queue = @import("util/queue.zig").Queue;
 pub const MemStack = @import("util/MemStack.zig");
+pub const Reader = @import("util/Reader.zig");
+pub const Writer = @import("util/Writer.zig");
 test {
     _ = @import("util/ring_cluster.zig");
     _ = @import("io/io.zig");
     _ = @import("httpparser/httpparser.zig");
+    _ = @import("util/MemStack.zig");
     _ = @import("lua/Lua.zig");
+    _ = @import("util/Reader.zig");
+    _ = @import("util/Writer.zig");
 }

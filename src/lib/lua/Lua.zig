@@ -45,11 +45,12 @@ const LuaType = enum(c_int) {
 //have to use pointer
 pub const Options = struct {
     allocator: ?*const std.mem.Allocator,
+    seed: usize = 0,
 };
 pub fn init(comptime op: Options) error{OutOfMemory}!LuaState {
     const alloc, const fun = if (op.allocator) |a| .{ a, alloctorFn } else .{ null, null };
     return .{
-        .state = c.lua_newstate(fun, @constCast(alloc)) orelse return error.OutOfMemory,
+        .state = c.lua_newstate(fun, @constCast(alloc), op.seed) orelse return error.OutOfMemory,
     };
 }
 pub fn deinit(l: *LuaState) void {

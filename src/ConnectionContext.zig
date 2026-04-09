@@ -1,73 +1,117 @@
 addr: std.net.Address = undefined,
-port: u16,
 handle: Io.Handle,
-buf: std.ArrayList(u8),
-requests: std.ArrayList(Request) = .empty,
+reader: lib.Reader,
+writer: lib.Writer,
+threads: lib.Queue(Thread),
 slab: std.heap.FixedBufferAllocator,
+rvec: [2]Io.Vec,
+wvec: [2]Io.Vec,
 allocation_fail_count: usize = 0,
+req_bytes_read: usize = 0,
+total_bytes_read: usize = 0,
 
 const ConnectionContext = @This();
 const Runtime = @import("Runtime.zig");
 const std = @import("std");
 const lib = @import("lib/lib.zig");
+const Future = @import("Future.zig");
 const Io = lib.Io;
 const Lua = lib.Lua;
 const Parser = lib.HttpParser;
 const EventQueue = lib.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
 
-const Request = struct {
+const Thread = struct {
     ref: c_int,
     lthread: Lua,
-    parsed_req: HttpParser.Request,
     //if you run out of memory before finishing a request, try to complete toher request first
     //if all of them require more memory than available, it's time to kill the conection
     arena: std.heap.ArenaAllocator,
-    fn deinit(req: *Request) void {
-        req.arena.deinit();
-    }
 };
 
-pub fn init(handle: Io.Handle, slab: std.heap.FixedBufferAllocator) !ConnectionContext {
+pub inline fn init(handle: Io.Handle, slab: std.heap.FixedBufferAllocator, reader_size: usize, buf_size: usize) !ConnectionContext {
     return .{
         .handle = handle,
         .slab = slab,
-        .requests = .empty,
+        .threads = .{},
+        .reader = .init(slab, reader_size),
         .allocation_fail_count = 0,
     };
 }
-pub fn deinit(conn: *ConnectionContext, r: *Runtime) void {
+pub inline fn deinit(conn: *ConnectionContext) void {
     //return resources used back to runtime
-    r.memstack.returnBuf(conn.slab);
-    r.lua.unref(conn.ref);
+    conn.slab.reset();
+    conn.memstack.returnBuf(conn.slab);
 }
-pub fn startNewRequests(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !void {
-
-    //if the size of request does not equal the size of the buffer, assume there are multiple request
-    var total_size: usize = 0;
-    while (total_size < conn.buf.items.len) {
-        //TODO: Handle chunck encoding/streamed bodies of request
-        //and allow seting max header size
-        conn.requests.append(conn.slab, conn.newRequest(lua, req));
-        total_size += request.size;
-    }
-
-    for (conn.requests.items) |req| {
-        //get the relavant handler from the routing table and run the handler
-        //pass the connection as a argument to the lua function
-        //expect to yield unless connection finishes in one go
-    }
-}
-fn newRequest(conn: *ConnectionContext, lua: *Lua, req: Parser.Request) !Request {
+pub fn startNewThread(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !void {
     var l = lua;
-    const thread = try l.newThread();
+    const lthread = try l.newThread();
     const ref = l.ref();
-    return .{
-        .parsed_req = req,
+    const thread: Thread = .{
         .arena = std.heap.ArenaAllocator.init(conn.slab.allocator()),
         .ref = ref,
-        .lthread = thread,
+        .lthread = lthread,
     };
+
+    //TODO: Handle chunck encoding/streamed bodies of request
+    //and allow seting max header size
+
+    //get the relavant handler from the routing table and run the handler
+    //pass the connection as a argument to the lua function
+    //expect to yield unless connection finishes in one go
+    conn.Thread.append(conn.slab, thread);
+}
+pub fn endThread(conn: *ConnectionContext) []const u8 {
+    //OPTIMIZE: Instead of getting a raw buffer from lua, return status, headers, and body
+}
+
+///future and event must outlive io submission
+pub fn read(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
+    const slice = conn.reader.free();
+    conn.rvec = .{
+        .{
+            .ptr = slice.first.ptr,
+            .len = slice.first.len,
+        },
+        .{
+            .ptr = slice.second.ptr,
+            .len = slice.second.len,
+        },
+    };
+    event.* = Io.Event.read(future, conn.handle, &conn.rvec, 0);
+    future.* = .{
+        .conn = conn,
+        .ctxt = conn,
+        .vtable = .{
+            .wake = Runtime.wake,
+            .cancel = Runtime.cancel,
+        },
+    };
+    io.submit(event) catch {};
+}
+///future and event must outlive io submission
+pub fn write(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
+    const slice = conn.writer.pending();
+    conn.wvec = .{
+        .{
+            .ptr = slice.first.ptr,
+            .len = slice.first.len,
+        },
+        .{
+            .ptr = slice.second.ptr,
+            .len = slice.second.len,
+        },
+    };
+    event.* = Io.Event.writev(future, conn.handle, &conn.wvec, 0);
+    future.* = .{
+        .conn = conn,
+        .ctxt = conn,
+        .vtable = .{
+            .wake = Runtime.wake,
+            .cancel = Runtime.cancel,
+        },
+    };
+    io.submit(event) catch {};
 }
 //WARNING: need to implement high level abstraction to go with Event for this to work
 const SignalError = error{InvalidSignal} || Lua.TypeError;
