@@ -20,6 +20,7 @@ const WriteError = interface.WriteError;
 const Operation = interface.Operation;
 const Handle = interface.Handle;
 const Event = interface.Event;
+const Vec = interface.Vec;
 
 pub fn init(options: interface.Options) !IO {
     const iouring = IoUring.init(options.entries, linux.IORING_SETUP_SINGLE_ISSUER) catch return error.InitializationFailed;
@@ -60,15 +61,8 @@ pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!v
         },
         .close => |c| self.iouring.close(@intFromPtr(event), c.handle),
         .read => |r| {
-            std.debug.assert(r.vec.len < 16);
-            var iovecs: [16]posix.iovec = undefined;
-            for (0..iovecs.len) |i| {
-                iovecs[i] = .{
-                    .base = r.vec[i].ptr,
-                    .len = r.vec[i].len,
-                };
-            }
-            self.iouring.read(@intFromPtr(event), r.handle, .{ .iovecs = iovecs[0..r.vec.len] }, r.offset);
+            const iovecs = Vec.toIoVecSlice(r.vec);
+            break :sqe self.iouring.read(@intFromPtr(event), r.handle, .{ .iovecs = iovecs[0..r.vec.len] }, r.offset);
         },
         .send => |s| {
             const options: interface.SendOptions = s.options;
@@ -78,6 +72,10 @@ pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!v
             if (options.fastopend) flags |= linux.MSG.FASTOPEN;
 
             break :sqe self.iouring.send(@intFromPtr(event), s.socket, s.buffer, flags);
+        },
+        .writev => |w| {
+            const iovecs = Vec.toConstIoVecSlice(w.vec);
+            break :sqe self.iouring.writev(@intFromPtr(event), w.handle, iovecs, w.offset);
         },
         .write => |w| self.iouring.write(@intFromPtr(event), w.handle, w.buffer, w.offset),
     } catch return error.IOFull;
@@ -202,6 +200,29 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
             event.status = .{
                 .complete = .{
                     .write = switch (cqe.err()) {
+                        .SUCCESS => @as(usize, @intCast(cqe.res)),
+                        .AGAIN => WriteError.WouldBlock,
+                        //.WOULDBLOCK => WriteError.WouldBlock,
+                        .BADF => WriteError.InvalidFileDescriptor,
+                        .FAULT => WriteError.MemoryFault,
+                        .INTR => WriteError.Interrupted,
+                        .INVAL => WriteError.InvalidArgument,
+                        .IO => WriteError.IoError,
+                        .NOSPC => WriteError.NoSpaceLeft,
+                        .PIPE => WriteError.BrokenPipe,
+                        .DQUOT => WriteError.QuotaExceeded,
+                        .FBIG => WriteError.FileTooLarge,
+                        .NOMEM => WriteError.OutOfMemory,
+                        .NOBUFS => WriteError.NoBufferSpace,
+                        else => AcceptError.Unexpected,
+                    },
+                },
+            };
+        },
+        .writev => {
+            event.status = .{
+                .complete = .{
+                    .writev = switch (cqe.err()) {
                         .SUCCESS => @as(usize, @intCast(cqe.res)),
                         .AGAIN => WriteError.WouldBlock,
                         //.WOULDBLOCK => WriteError.WouldBlock,

@@ -18,6 +18,7 @@ pub const AcceptError = interface.AcceptError;
 pub const SendError = interface.SendError;
 pub const ReadError = interface.ReadError;
 pub const WriteError = interface.WriteError;
+pub const Vec = interface.Vec;
 
 //Implementation must define 4 functions
 // 1. init: how to initialize async io
@@ -98,10 +99,17 @@ test "simple connection test" {
     };
 
     const ctx = struct {
-        buf: [1][]u8,
+        buf: [1]Vec,
     };
 
-    var c = ctx{ .buf = &buf };
+    var c = ctx{
+        .buf = .{
+            .{
+                .ptr = &buf,
+                .len = buf.len,
+            },
+        },
+    };
     var read_ev = Event.read(&c, handle, &c.buf, 0);
     try io.submit(&read_ev);
 
@@ -109,11 +117,11 @@ test "simple connection test" {
     event = q.dequeue().?;
     try std.testing.expect(event.status == .complete);
 
-    const context: *ctx = @ptrCast(@alignCast(event.context));
+    //const context: *ctx = @ptrCast(@alignCast(event.context));
     const read = try event.status.complete.read;
-    try std.testing.expectEqualStrings("Hello", context.buf[0][0..read]);
+    try std.testing.expectEqualStrings("Hello", buf[0..read]);
 
-    var write_ev = Event.send(&c, handle, context.buf[0][0..read], .{});
+    var write_ev = Event.send(&c, handle, buf[0..read], .{});
     try io.submit(&write_ev);
     q = try io.flush(1);
     event = q.dequeue().?;

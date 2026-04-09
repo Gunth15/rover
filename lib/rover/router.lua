@@ -1,5 +1,11 @@
 local M = {}
 
+---@class streamOptions
+---@field length integer
+---@field read_length integer
+---@field read_timeout integer
+---@alias stream fun(opts: streamOptions): string
+
 ---@class Connection
 ---@field host string
 ---@field method "GET" | "PUT" | "POST" | "PATCH" | "DELETE"
@@ -10,7 +16,7 @@ local M = {}
 ---@field remote_ip number[]
 ---@field query_string string
 ---@field query_parmas string
----@field body string
+---@field stream stream raw body that has not been parsed returned as a byte stream
 ---@field parsed_body any null unless populated by a plug
 ---@field assigns table passed from plugs
 ---@field config table immutable passed form the rover.load function
@@ -35,67 +41,6 @@ local M = {}
 
 ---multiplexes a route to a given namespace, route
 ---@param route string
----@param ... Route[]
----@return Router
-function M.mux(route, ...)
-	--TODO: handle case where two routes have the samespace
-	return {
-		[route] = ...,
-	}
-end
----@param route string
----@param func ConnectionFunction
----@return Route
-function M.get(route, func)
-	return {
-		[route] = {
-			["GET"] = func,
-		},
-	}
-end
----@param route string
----@param func ConnectionFunction
----@return Route
-function M.post(route, func)
-	return {
-		[route] = {
-			["POST"] = func,
-		},
-	}
-end
----@param route string
----@param func ConnectionFunction
----@return Route
-function M.delete(route, func)
-	return {
-		[route] = {
-			["DELETE"] = func,
-		},
-	}
-end
----@param route string
----@param func ConnectionFunction
----@return Route
-function M.put(route, func)
-	return {
-		[route] = {
-			["PUT"] = func,
-		},
-	}
-end
----@param route string
----@param func ConnectionFunction
----@return Route
-function M.patch(route, func)
-	return {
-		[route] = {
-			["PATCH"] = func,
-		},
-	}
-end
----@param route string
----@param controller Controller
----@param except string[]
 ---@return Router
 -- TODO: allow opt out
 -- TODO: check to see of controller function exist

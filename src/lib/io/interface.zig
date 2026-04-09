@@ -7,7 +7,10 @@ const posix = std.posix;
 
 pub const Handle = switch (buitin.os.tag) {
     .linux => std.os.linux.fd_t,
-    .windows => union { handle: std.os.windows.HANDLE, socket: std.os.windows.ws2_32.SOCKET },
+    .windows => union {
+        handle: std.os.windows.HANDLE,
+        socket: std.os.windows.ws2_32.SOCKET,
+    },
     else => @compileError("Not implemented yet"),
 };
 
@@ -119,6 +122,27 @@ pub const SendOptions = struct {
 };
 
 ///Operation to perform
+pub const Vec = switch (buitin.os.tag) {
+    .linux => extern struct {
+        ptr: [*]const u8,
+        len: usize,
+        pub fn toIoVecSlice(slice: []Vec) []posix.iovec {
+            comptime {
+                std.debug.assert(@sizeOf(Vec) == @sizeOf(posix.iovec));
+                std.debug.assert(@alignOf(Vec) == @alignOf(posix.iovec));
+            }
+            return @ptrCast(slice);
+        }
+        pub fn toConstIoVecSlice(slice: []const Vec) []const posix.iovec_const {
+            comptime {
+                std.debug.assert(@sizeOf(Vec) == @sizeOf(posix.iovec));
+                std.debug.assert(@alignOf(Vec) == @alignOf(posix.iovec));
+            }
+            return @ptrCast(slice);
+        }
+    },
+    else => @compileError("Os not supported yet"),
+};
 pub const Operation = union(enum) {
     accept: struct {
         handle: Handle,
@@ -133,7 +157,7 @@ pub const Operation = union(enum) {
     },
     read: struct {
         handle: Handle,
-        vec: [][]u8,
+        vec: []Vec,
         offset: u64,
     },
     send: struct {
@@ -146,6 +170,11 @@ pub const Operation = union(enum) {
         buffer: []const u8,
         offset: u64,
     },
+    writev: struct {
+        handle: Handle,
+        vec: []const Vec,
+        offset: u64,
+    },
 };
 
 ///Return union(negligable size diffrence)
@@ -155,6 +184,7 @@ pub const CompletionReturn = union(enum) {
     openat: OpenError!Handle,
     read: ReadError!usize,
     write: WriteError!usize,
+    writev: WriteError!usize,
     send: SendError!usize,
 };
 
@@ -184,7 +214,7 @@ pub const Event = struct {
         };
         return .{ .context = context, .status = .{ .pending = submission } };
     }
-    pub inline fn read(context: *anyopaque, handle: Handle, vec: [][]u8, offset: u64) Event {
+    pub inline fn read(context: *anyopaque, handle: Handle, vec: []Vec, offset: u64) Event {
         const submission: Operation = .{
             .read = .{
                 .vec = vec,
@@ -199,6 +229,16 @@ pub const Event = struct {
             .write = .{
                 .handle = handle,
                 .buffer = buffer,
+                .offset = offset,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
+    pub inline fn writev(context: *anyopaque, handle: Handle, vec: []Vec, offset: u64) Event {
+        const submission: Operation = .{
+            .writev = .{
+                .handle = handle,
+                .vec = vec,
                 .offset = offset,
             },
         };

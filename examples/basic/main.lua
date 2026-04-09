@@ -29,12 +29,12 @@ function rover.routes(plug)
 	--NOTE: special router.resources to create a route that has everything you really need for most MVC apps.
 	return {
 		--Most specific first
-		{ "/hello", GET = controllers.hello },
-		{ "/world", GET = controllers.world },
-		{ "/:name", GET = controllers.name },
+		{ "/hello", GET = controllers.hello.get },
+		{ "/world", GET = controllers.world.get },
+		{ "/:name", GET = controllers.name.get },
 		{ "/api", {
-			{ "/hello", GET = controllers.json },
-			{ "/nil", GET = controllers.nothing },
+			{ "/hello", GET = controllers.json.get },
+			{ "/nil", GET = controllers.nothing.get },
 		} },
 	}
 end

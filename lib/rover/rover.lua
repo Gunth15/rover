@@ -1,4 +1,5 @@
 local M = {}
-M.plugins = require("rover/plugins")
-M.router = require("rover/router")
+M.plugins = require("plugins")
+M.router = require("router")
+M.io = require("io")
 return M
