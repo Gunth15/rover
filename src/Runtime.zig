@@ -22,17 +22,9 @@ const FuturePool = std.heap.MemoryPoolExtra(Future, .{ .growable = false });
 
 const Runtime = @This();
 
-//NOTE: IO is close to the runtime, so all Io related operations are here
 pub fn addRoverIOLib(_: *Lua) void {}
 const Dir = struct {
     handle: Io.Handle,
-};
-const File = struct {
-    handle: Io.Handle,
-    buff: std.ArrayList(u8) = .empty,
-    offset: usize = 0,
-    fn wake(f: *Future, runtime: *Runtime, conn: *ConnectionContext, ctxt: *anyopaque) bool {}
-    fn cancel(f: *Future, runtime: *Runtime, conn: *ConnectionContext, ctxt: *anyopaque) void {}
 };
 
 pub fn init(alloc: *std.mem.Allocator, addr: std.net.Address, max_conns: usize, max_futures: usize, max_memory: usize, req_read_size: usize, max_req_size: usize) !Runtime {
@@ -64,93 +56,42 @@ pub fn setupConnection(f: *Future, r: *Runtime, _: *ConnectionContext) void {
     f.ctxt = event;
     r.io.submit(event) catch {};
 }
-pub fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ctxt: *anyopaque) Future.State {
-    const event: *Io.Event = @ptrCast(ctxt);
 
-    switch (event.status.complete) {
-        //Create a conncetion
-        .accept => |ret| {
-            const handle = ret catch return .failed;
+pub fn acceptConnections(r: *Runtime, fut: *Future, event: *Io.Event) void {
+    const cb = struct {
+        fn wake(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) Future.State {
+            std.debug.assert(event.status.complete == .accept);
 
-            const new_conn = r.connection_pool.create() catch return .failed;
+            const handle = event.status.complete.accept.ret catch return .failed;
+
+            const conn = r.connection_pool.create() catch return .failed;
             const thread = r.lua.newThread() catch return .failed;
 
-            new_conn.* = ConnectionContext.init(handle, thread, r.memstack.acquire(), 4096, 1024) catch return .failed;
+            conn.* = ConnectionContext.init(handle, thread, r.memstack.acquire(), 4096, 1024) catch return .failed;
 
             //make this a function
             const future = r.future_pool.create() catch return .failed;
             const ev = r.event_pool.create() catch return .failed;
 
-            const read_event = conn.read(future, ev);
-
-            r.io.submit(read_event) catch {};
-            return .finished;
+            conn.readAndStart(r.io, future, ev);
+            //NOTE: never finishes as ong as server is running
+            return .waiting;
+        }
+        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
+            return;
+        }
+    };
+    event.* = .accept(fut, r.stream.handle);
+    fut.* = .{
+        //NOTE: conn is never utilized for accepting new connections
+        .conn = @ptrFromInt(0),
+        .ctxt = event,
+        .vtable = .{
+            .wake = cb.wake,
+            .cancel = cb.cancel,
         },
-        //Read connection
-        .read => |ret| {
-            const read = ret catch return .failed;
-            //TODO: handle zero bytes read
-            const reader = conn.reader;
-            reader.advance(read);
-
-            const prev_bytes_read = conn.req_bytes_read;
-
-            //TODO: make an assert, so reader cannot be larger than this
-            const temp: [4096 * 4]u8 = undefined;
-
-            const slice = reader.peek();
-            //OPTIMIZE: I hope to replace this with a stateful http parser to remove the need
-            //for a temporary buffer
-            const buf_size = slice.first.len + slice.second.len;
-            @memcpy(temp[0..slice.first.len], slice.first);
-            @memcpy(temp[slice.first.len..buf_size], slice.second);
-            const parsable = temp[0..buf_size];
-
-            conn.total_bytes_read += read;
-            conn.req_bytes_read += read;
-            const req = Parser.parse(parsable, conn.slab, 64, prev_bytes_read) catch |e| {
-                switch (e) {
-                    error.PartialRequest => {
-                        //TODO: if req_bytes_read == max_req_bytes or wrote != read, write log error and return 403, set read_bytes back to 0
-                        conn.read(r.io, f, event);
-                        return .waiting;
-                    },
-                    else => return .failed,
-                }
-            };
-
-            reader.advanceHead(req.size);
-            conn.req_bytes_read -= req.size;
-
-            //TODO: if connection is keep-alive, read again until timeout or close is sent by user
-            //SEND ANOTHER READ
-
-            conn.startNewThread(r, req);
-            conn.stopThread();
-        },
-        //Write to connection
-        .writev => |ret| {
-            const written = ret catch return .failed;
-            const writer = conn.writer;
-            writer.consume(written);
-
-            if (writer.pending()) {
-                conn.write(r.io, f, event);
-                return .waiting;
-            }
-
-            return .finished;
-        },
-        //Close and deinitialize connection
-        .close => {
-            conn.deinit();
-            r.event_pool.destroy(event);
-            r.FuturePool.destroy(f);
-            r.connection_pool.destroy(conn);
-        },
-        else => unreachable,
-    }
-    return .finished;
+    };
+    r.io.submit(event) catch {};
 }
 pub fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, ctxt: *anyopaque) void {
     const event: Io.Event = @ptrCast(ctxt);

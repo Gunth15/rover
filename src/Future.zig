@@ -15,10 +15,10 @@ fn create(conn: *ConnectionContext, ctxt: *anyopaque) Future {
         .ctxt = ctxt,
     };
 }
-fn wake(f: *Future, runtime: *Runtime, conn: *ConnectionContext, ctxt: *anyopaque) State {
-    return f.vtable.wake(conn, runtime, ctxt);
+fn wake(f: *Future, runtime: *Runtime) State {
+    return f.vtable.wake(f, runtime, f.conn, f.ctxt);
 }
 //canel is called don failure
-fn cancel(f: *Future, runtime: *Runtime, conn: *ConnectionContext, ctxt: *anyopaque) void {
-    f.vtable.cancel(conn, runtime, ctxt);
+fn cancel(f: *Future, runtime: *Runtime) void {
+    return f.vtable.cancel(f, runtime, f.conn, f.ctxt);
 }

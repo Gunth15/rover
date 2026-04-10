@@ -27,6 +27,7 @@ const Thread = struct {
     //if you run out of memory before finishing a request, try to complete toher request first
     //if all of them require more memory than available, it's time to kill the conection
     arena: std.heap.ArenaAllocator,
+    next: ?Thread,
 };
 
 pub inline fn init(handle: Io.Handle, slab: std.heap.FixedBufferAllocator, reader_size: usize, buf_size: usize) !ConnectionContext {
@@ -43,7 +44,7 @@ pub inline fn deinit(conn: *ConnectionContext) void {
     conn.slab.reset();
     conn.memstack.returnBuf(conn.slab);
 }
-pub fn startNewThread(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !void {
+pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !void {
     var l = lua;
     const lthread = try l.newThread();
     const ref = l.ref();
@@ -61,12 +62,147 @@ pub fn startNewThread(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Reque
     //expect to yield unless connection finishes in one go
     conn.Thread.append(conn.slab, thread);
 }
-pub fn endThread(conn: *ConnectionContext) []const u8 {
+pub fn stop(conn: *ConnectionContext, lua: *Lua) void {
     //OPTIMIZE: Instead of getting a raw buffer from lua, return status, headers, and body
+    const thread = conn.threads.dequeue().?;
+    defer {
+        thread.arena.deinit();
+        lua.unref(thread.ref);
+    }
+
+    const str = thread.lthread.to(Lua.String, 0) catch @panic("Return value is not a string");
+    const wrote = conn.writer.fill(str);
+    if (wrote != str.len) @panic("Full return string not written, TODO: handle this case");
 }
 
-///future and event must outlive io submission
-pub fn read(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
+///future and evet must outlive function
+///Starts handling request if it receieves a full HTTP Request
+pub fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+    const Readcb = struct {
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
+            std.debug.assert(event.status.complete == .read);
+
+            const read_bytes = event.status.complete.read catch return .failed;
+
+            //TODO: handle zero bytes read
+            const reader = conn.reader;
+            reader.advance(read_bytes);
+
+            const prev_bytes_read = conn.req_bytes_read;
+
+            //TODO: make an assert, so reader cannot be larger than this
+            const temp: [4096 * 4]u8 = undefined;
+
+            const slice = reader.peek();
+            //OPTIMIZE: I hope to replace this with a stateful http parser to remove the need
+            //for a temporary buffer
+            const buf_size = slice.first.len + slice.second.len;
+            @memcpy(temp[0..slice.first.len], slice.first);
+            @memcpy(temp[slice.first.len..buf_size], slice.second);
+            const parsable = temp[0..buf_size];
+
+            conn.total_bytes_read += read_bytes;
+            conn.req_bytes_read += read_bytes;
+            const req = Parser.parse(parsable, conn.slab, 64, prev_bytes_read) catch |e| {
+                switch (e) {
+                    error.PartialRequest => {
+                        //TODO: if req_bytes_read == max_req_bytes or wrote != read, write log error and return 403, set read_bytes back to 0
+                        conn.readIo(r.io, f, event);
+                        return .waiting;
+                    },
+                    else => return .failed,
+                }
+            };
+
+            reader.advanceHead(req.size);
+            conn.req_bytes_read -= req.size;
+
+            //TODO: if connection is keep-alive, read again until timeout or close is sent by user
+            //SEND ANOTHER READ
+
+            conn.start(r.lua, req);
+            conn.stop(r.lua);
+        }
+        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) void {
+            conn.deinit();
+            r.event_pool.deinit(event);
+            r.future_pool.deinit(f);
+            r.connection_pool.deinit(conn);
+        }
+    };
+    fut.* = .{
+        .conn = c,
+        //NOTE: observe use of ctxt because I may not need it
+        .ctxt = event,
+        .vtable = .{
+            .wake = Readcb.wake,
+            .cancel = Readcb.cancel,
+        },
+    };
+    c.readIo(io, fut, event);
+}
+///future and event must outlive function
+pub fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+    const cb = struct {
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
+            std.debug.assert(event.status.complete == .writev);
+            const written = event.status.complete.writev catch return .failed;
+            const writer = conn.writer;
+            writer.consume(written);
+
+            if (writer.pending()) {
+                conn.writeIo(r.io, f, event);
+                return .waiting;
+            }
+            return .finished;
+        }
+        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) void {
+            conn.deinit();
+            r.event_pool.deinit(event);
+            r.future_pool.deinit(f);
+            r.connection_pool.deinit(conn);
+        }
+    };
+    fut.* = .{
+        .conn = c,
+        //NOTE: observe use of ctxt because I may not need it
+        .ctxt = event,
+        .vtable = .{
+            .wake = cb.wake,
+            .cancel = cb.cancel,
+        },
+    };
+    c.writeIo(io, fut, event);
+}
+
+///future and event must outlive function
+pub fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+    const cb = struct {
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
+            std.debug.print("Connection closed", .{});
+            conn.deinit();
+            r.event_pool.destroy(event);
+            r.FuturePool.destroy(f);
+            r.connection_pool.destroy(conn);
+        }
+        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
+            return;
+        }
+    };
+    fut.* = .{
+        .conn = c,
+        //NOTE: observe use of ctxt because I may not need it
+        .ctxt = event,
+        .vtable = .{
+            .wake = cb.wake,
+            .cancel = cb.cancel,
+        },
+    };
+    event.* = .close(fut, c.handle);
+    io.submit(event);
+}
+
+inline fn readIo(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
     const slice = conn.reader.free();
     conn.rvec = .{
         .{
@@ -89,8 +225,7 @@ pub fn read(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event)
     };
     io.submit(event) catch {};
 }
-///future and event must outlive io submission
-pub fn write(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
+inline fn writeIo(conn: *ConnectionContext, io: *Io, future: *Future, event: *Io.Event) void {
     const slice = conn.writer.pending();
     conn.wvec = .{
         .{
@@ -112,66 +247,4 @@ pub fn write(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event
         },
     };
     io.submit(event) catch {};
-}
-//WARNING: need to implement high level abstraction to go with Event for this to work
-const SignalError = error{InvalidSignal} || Lua.TypeError;
-fn getLuaSignal(ctxt: *ConnectionContext) SignalError!void {
-    var lua = ctxt.lua;
-    //Table structure(deisgned like a syscall)
-    //{
-    // string of type,
-    // [data relvat to thet type IE a handle or a string]
-    //}
-    std.debug.assert(lua.Luatype(-1) == .table);
-    std.debug.assert(lua.getRawI(-1, 0) == .string);
-    const call_type = try lua.to([]const u8, -1);
-
-    //if (std.ascii.eqlIgnoreCase(call_type, "accept")) return Io.Event.read(``, handle: either type, buffer: []u8, offset: u64)
-    if (std.ascii.eqlIgnoreCase(call_type, "openat")) {
-        //WARNING: Handle does not handles windows yet, so it is intpretted as just a int
-        std.debug.assert(lua.getRawI(-2, 1) == .number);
-        std.debug.assert(lua.getRawI(-3, 2) == .string);
-        std.debug.assert(lua.getRawI(-4, 3) == .table);
-        const handle = try lua.to(Lua.Integer, -3);
-        const path = try lua.to(Lua.String, -2);
-        const options = try lua.to(Io.OpenOptions, -1);
-    }
-    if (std.ascii.eqlIgnoreCase(call_type, "read")) {
-        //WARNING: Handle does not handles windows yet, so it is intpretted as just a int
-        std.debug.assert(lua.getRawI(-2, 1) == .number);
-        std.debug.assert(lua.getRawI(-3, 2) == .number);
-        const handle = try lua.to(Lua.Integer, -3);
-        const offset = try lua.to(Io.OpenOptions, -1);
-
-        //initialize to build return string
-        try lua.initBuf(ctxt.lua_buf);
-    }
-    if (std.ascii.eqlIgnoreCase(call_type, "send")) {
-        //WARNING: Handle does not handles windows yet, so it is intpretted as just a int
-        std.debug.assert(lua.getRawI(-2, 1) == .number);
-        std.debug.assert(lua.getRawI(-3, 2) == .string);
-        std.debug.assert(lua.getRawI(-3, 3) == .table);
-        const handle = try lua.to(Lua.Integer, -3);
-        const string = try lua.to(Lua.String, -2);
-        const options = try lua.to(Io.SendOptions, -1);
-        return .{ .io_event = .{ .send = Io.Event.send(ctxt, handle, string, options) } };
-    }
-    if (std.ascii.eqlIgnoreCase(call_type, "write")) {
-        //WARNING: Handle does not handles windows yet, so it is intpretted as just a int
-        std.debug.assert(lua.getRawI(-2, 1) == .number);
-        std.debug.assert(lua.getRawI(-3, 2) == .string);
-        std.debug.assert(lua.getRawI(-3, 3) == .number);
-        const handle = try lua.to(Lua.Integer, -3);
-        const string = try lua.to(Lua.String, -2);
-        const offset = try lua.to(Lua.Integer, -1);
-        return .{ .io_event = .{ .write = Io.Event.write(ctxt, handle, string, offset) } };
-    }
-    if (std.ascii.eqlIgnoreCase(call_type, "close")) {
-        //WARNING: Handle does not handles windows yet, so it is intpretted as just a int
-        std.debug.assert(lua.getRawI(-2, 1) == .number);
-        const handle = try lua.to(Lua.Integer, -1);
-        return .{ .io_event = .{ .close = Io.Event.close(ctxt, handle) } };
-    }
-
-    return error.InvalidSignal;
 }
