@@ -11,10 +11,10 @@ start: usize = 0,
 end: usize = 0,
 buf: []u8,
 
-pub fn init(alloc: std.mem.Allocator, n: usize) Writer {
+pub fn init(alloc: std.mem.Allocator, n: usize) !Writer {
     std.debug.assert(std.math.isPowerOfTwo(n));
     return .{
-        .buf = alloc.alloc(u8, n),
+        .buf = try alloc.alloc(u8, n),
     };
 }
 
@@ -23,7 +23,7 @@ pub fn deinit(w: *Writer, alloc: std.mem.Allocator) void {
 }
 
 /// pending data to send (same idea as reader.peek)
-pub fn peek(w: *Writer) Slice {
+pub fn pending(w: *Writer) Slice {
     const available = w.end - w.start;
 
     const cap = w.buf.len;
@@ -37,22 +37,23 @@ pub fn peek(w: *Writer) Slice {
         .second = w.buf[0..l2],
     };
 }
+pub fn hasPendingBytes(w: *Writer) bool {
+    return (w.end - w.start) > 0;
+}
 
 /// free space to write into (like reader.free)
-pub fn pending(w: *Writer) ?Slice {
-    const available = w.end - w.start;
-    if (available == 0) return null;
-
+pub fn fill(w: *Writer, data: []const u8) usize {
     const cap = w.buf.len;
-    const start = w.start & (cap - 1);
-
-    const l1 = @min(available, cap - start);
-    const l2 = available - l1;
-
-    return Slice{
-        .first = w.buf[start .. start + l1],
-        .second = w.buf[0..l2],
-    };
+    const free_bytes = cap - (w.end - w.start);
+    const n = @min(data.len, free_bytes);
+    if (n == 0) return 0;
+    const end = w.end & (cap - 1);
+    const l1 = @min(n, cap - end);
+    @memcpy(w.buf[end .. end + l1], data[0..l1]);
+    const l2 = n - l1;
+    if (l2 > 0) @memcpy(w.buf[0..l2], data[l1..n]);
+    w.advance(n);
+    return n;
 }
 
 pub fn advance(w: *Writer, n: usize) void {

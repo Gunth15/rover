@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_module.linkLibrary(lib);
     const exe = b.addExecutable(.{ .name = "rover", .root_module = exe_module });
+    exe.addIncludePath(b.path("./src/lib/httpparser"));
     b.installArtifact(exe);
 
     //test

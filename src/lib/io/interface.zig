@@ -146,6 +146,11 @@ pub const Vec = switch (buitin.os.tag) {
 pub const Operation = union(enum) {
     accept: struct {
         handle: Handle,
+        addr: *Address,
+        addr_len: posix.socklen_t = @sizeOf(std.net.Address),
+    },
+    accept_multishot: struct {
+        handle: Handle,
     },
     close: struct {
         handle: Handle,
@@ -180,6 +185,7 @@ pub const Operation = union(enum) {
 ///Return union(negligable size diffrence)
 pub const CompletionReturn = union(enum) {
     accept: AcceptError!Handle,
+    accept_multishot: AcceptError!Handle,
     close: void,
     openat: OpenError!Handle,
     read: ReadError!usize,
@@ -196,9 +202,18 @@ pub const Event = struct {
     status: Status,
     //used for queue
     next: ?*Event = null,
-    pub inline fn accept(context: *anyopaque, handle: Handle) Event {
+    pub inline fn accept(context: *anyopaque, handle: Handle, addr: *Address) Event {
         const submission: Operation = .{
             .accept = .{
+                .handle = handle,
+                .addr = addr,
+            },
+        };
+        return .{ .context = context, .status = .{ .pending = submission } };
+    }
+    pub inline fn accept_multishot(context: *anyopaque, handle: Handle) Event {
+        const submission: Operation = .{
+            .accept_multishot = .{
                 .handle = handle,
             },
         };

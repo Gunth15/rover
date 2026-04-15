@@ -1,11 +1,10 @@
 addr: std.net.Address = undefined,
-handle: Io.Handle,
+handle: Io.Handle = undefined,
+rvec: [2]Io.Vec = undefined,
+wvec: [2]Io.Vec = undefined,
 reader: lib.Reader,
 writer: lib.Writer,
-threads: lib.Queue(Thread),
 slab: std.heap.FixedBufferAllocator,
-rvec: [2]Io.Vec,
-wvec: [2]Io.Vec,
 allocation_fail_count: usize = 0,
 req_bytes_read: usize = 0,
 total_bytes_read: usize = 0,
@@ -27,44 +26,94 @@ const Thread = struct {
     //if you run out of memory before finishing a request, try to complete toher request first
     //if all of them require more memory than available, it's time to kill the conection
     arena: std.heap.ArenaAllocator,
-    next: ?Thread,
-};
+    fn resumeT(t: *Thread) void {
+        var nresults: usize = 0;
+        const state = t.lthread.resumeT(null, 1, &nresults) catch @panic("Out of memory or some other runtime error, TODO: handle cases properly");
+        std.debug.assert(state == .OK);
+    }
+    fn startT(t: *Thread, conn: *ConnectionContext, req: HttpParser.Request) void {
+        //send connection
+        const thread: *Lua = &t.lthread;
 
-pub inline fn init(handle: Io.Handle, slab: std.heap.FixedBufferAllocator, reader_size: usize, buf_size: usize) !ConnectionContext {
+        std.debug.assert(thread.getGlobal("rover.routing.table") == .table);
+
+        const alloc = conn.slab.allocator();
+        const path_buf = alloc.alloc(u8, req.path.len + 1) catch @panic("No memory");
+        @memcpy(path_buf[0..req.path.len], req.path);
+        path_buf[req.path.len] = 0;
+        defer alloc.free(path_buf);
+
+        if (thread.getField(-1, @ptrCast(path_buf)) != .func) thread.fmtError("Invalid handler type", .{});
+
+        thread.newTable();
+        thread.push(req.headers.get("Host"));
+        thread.setField(-2, "host");
+
+        thread.push(req.method);
+        thread.setField(-2, "method");
+
+        //TODO: handle header differnelty
+        //thread.push(req.headers);
+        //thread.setField(-2,"headers");
+
+        //TODO: Path info
+
+        thread.push(req.path);
+        thread.setField(-2, "request_path");
+
+        //TODO: Scheme
+        //thread.push(req.scheme);
+        //thread.setField(-2, "scheme");
+
+        thread.push(req.body);
+        thread.setField(-2, "body");
+
+        //TODO: Assigns
+        //thread.push(req.scheme);
+
+        //TODO: shared
+        //thread.push(req.scheme);
+
+        thread.push(conn.addr.getPort());
+        thread.setField(-2, "port");
+
+        t.resumeT();
+    }
+};
+pub inline fn init(slab: std.mem.Allocator, mem_size: usize, reader_size: usize, writer_size: usize) !ConnectionContext {
+    const conn_slab = std.heap.FixedBufferAllocator.init(
+        try slab.alloc(u8, mem_size),
+    );
     return .{
-        .handle = handle,
-        .slab = slab,
-        .threads = .{},
-        .reader = .init(slab, reader_size),
+        .slab = conn_slab,
+        .reader = try .init(slab, reader_size),
+        .writer = try .init(slab, writer_size),
         .allocation_fail_count = 0,
     };
 }
-pub inline fn deinit(conn: *ConnectionContext) void {
-    //return resources used back to runtime
+pub inline fn reset(conn: *ConnectionContext) !ConnectionContext {
+    conn.addr = undefined;
     conn.slab.reset();
-    conn.memstack.returnBuf(conn.slab);
+    conn.handle = undefined;
+    conn.threads = .{};
+    conn.reader.reset();
+    conn.allocation_fail_count = 0;
 }
-pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !void {
+pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !Thread {
     var l = lua;
     const lthread = try l.newThread();
     const ref = l.ref();
-    const thread: Thread = .{
+    var thread: Thread = .{
         .arena = std.heap.ArenaAllocator.init(conn.slab.allocator()),
         .ref = ref,
         .lthread = lthread,
     };
 
-    //TODO: Handle chunck encoding/streamed bodies of request
-    //and allow seting max header size
-
-    //get the relavant handler from the routing table and run the handler
-    //pass the connection as a argument to the lua function
-    //expect to yield unless connection finishes in one go
-    conn.Thread.append(conn.slab, thread);
+    thread.startT(conn, req);
+    return thread;
 }
-pub fn stop(conn: *ConnectionContext, lua: *Lua) void {
+pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
     //OPTIMIZE: Instead of getting a raw buffer from lua, return status, headers, and body
-    const thread = conn.threads.dequeue().?;
     defer {
         thread.arena.deinit();
         lua.unref(thread.ref);
@@ -74,24 +123,52 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua) void {
     const wrote = conn.writer.fill(str);
     if (wrote != str.len) @panic("Full return string not written, TODO: handle this case");
 }
+///future and evet must outlive function
+///rearms context to accept new connection handle and address
+pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, server_handle: Io.Handle) void {
+    const cb = struct {
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            std.debug.assert(ev.status == .complete);
+            std.debug.assert(ev.status.complete == .accept);
 
+            conn.handle = ev.status.complete.accept catch return .failed;
+            conn.readAndStart(&r.io, f, ev);
+            return .waiting;
+        }
+        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
+            return;
+        }
+    };
+    event.* = .accept(fut, server_handle, &c.addr);
+    fut.* = .{
+        .conn = c,
+        .ctxt = fut,
+        .vtable = &.{
+            .wake = cb.wake,
+            .cancel = cb.cancel,
+        },
+    };
+    io.submit(event) catch {};
+}
 ///future and evet must outlive function
 ///Starts handling request if it receieves a full HTTP Request
-pub fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const Readcb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
-            std.debug.assert(event.status.complete == .read);
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            std.debug.assert(ev.status.complete == .read);
 
-            const read_bytes = event.status.complete.read catch return .failed;
+            const read_bytes = ev.status.complete.read catch return .failed;
 
             //TODO: handle zero bytes read
-            const reader = conn.reader;
+            const reader = &conn.reader;
             reader.advance(read_bytes);
 
             const prev_bytes_read = conn.req_bytes_read;
 
             //TODO: make an assert, so reader cannot be larger than this
-            const temp: [4096 * 4]u8 = undefined;
+            var temp: [4096 * 4]u8 = undefined;
 
             const slice = reader.peek();
             //OPTIMIZE: I hope to replace this with a stateful http parser to remove the need
@@ -103,38 +180,37 @@ pub fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Eve
 
             conn.total_bytes_read += read_bytes;
             conn.req_bytes_read += read_bytes;
-            const req = Parser.parse(parsable, conn.slab, 64, prev_bytes_read) catch |e| {
+            const req = Parser.parse(parsable, conn.slab.allocator(), 64, prev_bytes_read) catch |e| {
                 switch (e) {
                     error.PartialRequest => {
                         //TODO: if req_bytes_read == max_req_bytes or wrote != read, write log error and return 403, set read_bytes back to 0
-                        conn.readIo(r.io, f, event);
+                        conn.readIo(&r.io, f, ev);
                         return .waiting;
                     },
                     else => return .failed,
                 }
             };
 
-            reader.advanceHead(req.size);
+            reader.consumeHead(req.size);
             conn.req_bytes_read -= req.size;
 
             //TODO: if connection is keep-alive, read again until timeout or close is sent by user
             //SEND ANOTHER READ
 
-            conn.start(r.lua, req);
-            conn.stop(r.lua);
+            var thread = conn.start(&r.lua, req) catch |e| @panic(@typeName(@TypeOf(e)));
+            conn.stop(&r.lua, &thread);
+            conn.write(&r.io, f, ev);
+            return .waiting;
         }
-        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) void {
-            conn.deinit();
-            r.event_pool.deinit(event);
-            r.future_pool.deinit(f);
-            r.connection_pool.deinit(conn);
+        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) void {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            conn.close(&r.io, f, ev);
         }
     };
     fut.* = .{
         .conn = c,
-        //NOTE: observe use of ctxt because I may not need it
         .ctxt = event,
-        .vtable = .{
+        .vtable = &.{
             .wake = Readcb.wake,
             .cancel = Readcb.cancel,
         },
@@ -142,32 +218,30 @@ pub fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Eve
     c.readIo(io, fut, event);
 }
 ///future and event must outlive function
-pub fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
-            std.debug.assert(event.status.complete == .writev);
-            const written = event.status.complete.writev catch return .failed;
-            const writer = conn.writer;
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            std.debug.assert(ev.status.complete == .writev);
+            const written = ev.status.complete.writev catch return .failed;
+            const writer = &conn.writer;
             writer.consume(written);
 
-            if (writer.pending()) {
-                conn.writeIo(r.io, f, event);
+            if (writer.hasPendingBytes()) {
+                conn.writeIo(&r.io, f, ev);
                 return .waiting;
             }
             return .finished;
         }
-        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) void {
-            conn.deinit();
-            r.event_pool.deinit(event);
-            r.future_pool.deinit(f);
-            r.connection_pool.deinit(conn);
+        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) void {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            conn.close(&r.io, f, ev);
         }
     };
     fut.* = .{
         .conn = c,
-        //NOTE: observe use of ctxt because I may not need it
         .ctxt = event,
-        .vtable = .{
+        .vtable = &.{
             .wake = cb.wake,
             .cancel = cb.cancel,
         },
@@ -176,14 +250,13 @@ pub fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) voi
 }
 
 ///future and event must outlive function
-pub fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
+fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, _: *anyopaque) Future.State {
+        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
             std.debug.print("Connection closed", .{});
-            conn.deinit();
-            r.event_pool.destroy(event);
-            r.FuturePool.destroy(f);
-            r.connection_pool.destroy(conn);
+            conn.rearm(&r.io, f, ev, r.server.stream.handle);
+            return .waiting;
         }
         fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
             return;
@@ -191,18 +264,17 @@ pub fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) voi
     };
     fut.* = .{
         .conn = c,
-        //NOTE: observe use of ctxt because I may not need it
         .ctxt = event,
-        .vtable = .{
+        .vtable = &.{
             .wake = cb.wake,
             .cancel = cb.cancel,
         },
     };
     event.* = .close(fut, c.handle);
-    io.submit(event);
+    io.submit(event) catch {};
 }
 
-inline fn readIo(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.Event) void {
+inline fn readIo(conn: *ConnectionContext, io: *Io, future: *Future, event: *Io.Event) void {
     const slice = conn.reader.free();
     conn.rvec = .{
         .{
@@ -215,14 +287,6 @@ inline fn readIo(conn: *ConnectionContext, io: Io, future: *Future, event: *Io.E
         },
     };
     event.* = Io.Event.read(future, conn.handle, &conn.rvec, 0);
-    future.* = .{
-        .conn = conn,
-        .ctxt = conn,
-        .vtable = .{
-            .wake = Runtime.wake,
-            .cancel = Runtime.cancel,
-        },
-    };
     io.submit(event) catch {};
 }
 inline fn writeIo(conn: *ConnectionContext, io: *Io, future: *Future, event: *Io.Event) void {
@@ -238,13 +302,5 @@ inline fn writeIo(conn: *ConnectionContext, io: *Io, future: *Future, event: *Io
         },
     };
     event.* = Io.Event.writev(future, conn.handle, &conn.wvec, 0);
-    future.* = .{
-        .conn = conn,
-        .ctxt = conn,
-        .vtable = .{
-            .wake = Runtime.wake,
-            .cancel = Runtime.cancel,
-        },
-    };
     io.submit(event) catch {};
 }

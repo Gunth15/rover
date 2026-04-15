@@ -47,16 +47,21 @@ pub const Options = struct {
     allocator: ?*const std.mem.Allocator,
     seed: usize = 0,
 };
-pub fn init(comptime op: Options) error{OutOfMemory}!LuaState {
-    const alloc, const fun = if (op.allocator) |a| .{ a, alloctorFn } else .{ null, null };
-    return .{
-        .state = c.lua_newstate(fun, @constCast(alloc), op.seed) orelse return error.OutOfMemory,
-    };
+pub fn init(op: Options) error{OutOfMemory}!LuaState {
+    if (op.allocator) |a| {
+        return .{
+            .state = c.lua_newstate(alloctorFn, @constCast(a), @intCast(op.seed)) orelse return error.OutOfMemory,
+        };
+    } else {
+        return .{
+            .state = c.lua_newstate(null, null, @intCast(op.seed)) orelse return error.OutOfMemory,
+        };
+    }
 }
 pub fn deinit(l: *LuaState) void {
     return c.lua_close(l.state);
 }
-const LoadError = error{ NoMemory, SyntaxError };
+const LoadError = error{ NoMemory, SyntaxError, FileError };
 //LoadString loads, but does not execute the given string
 pub fn loadString(l: *LuaState, str: [:0]const u8) LoadError!void {
     switch (c.luaL_loadstring(l.state, str)) {
@@ -71,11 +76,23 @@ pub fn doString(l: *LuaState, str: [:0]const u8) !void {
     try l.loadString(str);
     _ = try l.pcall(0, c.LUA_MULTRET);
 }
+pub fn doFile(l: *LuaState, file_name: [:0]const u8) LoadError!void {
+    switch (c.luaL_loadfilex(l.state, file_name, "bt")) {
+        c.LUA_OK => {
+            _ = l.pcall(0, c.LUA_MULTRET) catch {};
+            return;
+        },
+        c.LUA_ERRMEM => return error.NoMemory,
+        c.LUA_ERRSYNTAX => return error.SyntaxError,
+        else => unreachable,
+    }
+}
 pub fn loadFile(l: *LuaState, file_name: [:0]const u8) LoadError!void {
-    switch (c.luaL_loadfile(l.state, file_name)) {
+    switch (c.luaL_loadfilex(l.state, file_name, "bt")) {
         c.LUA_OK => return,
         c.LUA_ERRMEM => return error.NoMemory,
         c.LUA_ERRSYNTAX => return error.SyntaxError,
+        c.LUA_ERRFILE => return error.FileError,
         else => unreachable,
     }
 }
@@ -118,7 +135,7 @@ pub fn call(l: *LuaState, func: [:0]const u8, args: anytype, ResultType: type) C
 ///Pushes given value to lua
 ///structs are passed using their luaPush method if one exist, oterwise they are mapped to a luatable
 ///pointers are passed as light userdata in lua
-pub inline fn push(l: *LuaState, arg: anytype) void {
+pub fn push(l: *LuaState, arg: anytype) void {
     const ArgType = @TypeOf(arg);
     switch (@typeInfo(ArgType)) {
         .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else structToTable(arg),
@@ -128,7 +145,16 @@ pub inline fn push(l: *LuaState, arg: anytype) void {
         .null => c.lua_pushnil(l.state),
         .optional => if (arg) |val| l.push(val) else c.lua_pushnil(l.state),
         //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
-        .pointer => |info| if (info.size == .slice and info.child == u8 and info.is_const) c.lua_pushlstring(l.state, arg.ptr, arg.len) else c.lua_pushlightuserdata(l.state, arg),
+        .pointer => |info| {
+            if (info.size == .slice and info.child == u8 and info.is_const) {
+                _ = c.lua_pushlstring(l.state, arg.ptr, arg.len);
+                return;
+            }
+            if (info.size == .c and info.child == u8 and info.is_const) {
+                _ = c.lua_pushstring(l.state, arg);
+            }
+            return c.lua_pushlightuserdata(l.state, arg);
+        },
         .@"fn" => {
             //mask closure that handles arguments and expected return value
 
@@ -201,8 +227,14 @@ pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
 ///Ex. wanting to pop values your way
 ///Ex. wanting to run functions passed to a function
 ///
-pub fn pcall(l: *LuaState, nargs: isize, nres: isize) CallError!usize {
-    return @intCast(c.lua_pcallk(l.state, @intCast(nargs), @intCast(nres), 0, 0, null));
+pub fn pcall(l: *LuaState, nargs: isize, nres: isize) CallError!void {
+    switch (c.lua_pcallk(l.state, @intCast(nargs), @intCast(nres), 0, 0, null)) {
+        c.LUA_OK => return,
+        c.LUA_ERRRUN => return CallError.RuntimeError,
+        c.LUA_ERRMEM => return CallError.AllocationError,
+        c.LUA_ERRERR => return CallError.HandlerError,
+        else => unreachable,
+    }
 }
 
 pub fn register(l: *LuaState, name: [:0]const u8, comptime func: anytype) void {
@@ -310,9 +342,10 @@ pub fn argError(l: *LuaState, arg: usize, msg: [*:0]const u8) noreturn {
     _ = c.luaL_argerror(l.state, @intCast(arg), msg);
     unreachable;
 }
-pub fn resumeT(l: *LuaState, from: ?*LuaState, nargs: usize, nresults: *usize) CallError!enum { OK, YIELDED } {
+pub const StateStatus = enum { OK, YIELDED };
+pub fn resumeT(l: *LuaState, from: ?*LuaState, nargs: usize, nresults: *usize) CallError!StateStatus {
     const from_state: ?*c.lua_State = if (from) |f| f.state else null;
-    const ret = c.lua_resume(l.state, from_state, nargs, nresults);
+    const ret = c.lua_resume(l.state, from_state, @intCast(nargs), @ptrCast(nresults));
     return switch (ret) {
         c.LUA_OK => .OK,
         c.LUA_YIELD => .YIELDED,
@@ -344,8 +377,11 @@ pub fn getRawI(l: *LuaState, index: isize, n: isize) LuaType {
 pub fn setRawI(l: *LuaState, index: isize, i: isize) void {
     c.lua_rawseti(l.state, @as(c_int, index), @as(c_longlong, i));
 }
+pub fn setField(l: *LuaState, index: isize, key: [:0]const u8) void {
+    return c.lua_setfield(l.state, @intCast(index), key);
+}
 pub fn getField(l: *LuaState, index: isize, name: [:0]const u8) LuaType {
-    return @enumFromInt(c.lua_getfield(l.state, @as(c_int, index), name));
+    return @enumFromInt(c.lua_getfield(l.state, @intCast(index), name));
 }
 pub fn getTop(l: *LuaState) isize {
     return @intCast(c.lua_gettop(l.state));

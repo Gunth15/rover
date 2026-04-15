@@ -1,20 +1,22 @@
 io: Io,
 //connection entry point stream
-stream: std.net.Stream,
+server: std.net.Server = undefined,
 lua: Lua,
+//TODO: Connections no longer need to be pooled because they are reused
+//same for the event and future used by the conncetion
 connection_pool: ConnectionPool,
 event_pool: EventPool,
 future_pool: FuturePool,
-memstack: MemStack,
-read_size: usize,
+slab: std.heap.FixedBufferAllocator,
+conn_slab_size: usize,
 max_req: usize,
+max_resp: usize,
 const std = @import("std");
 const lib = @import("lib/lib.zig");
 const Io = lib.Io;
 const Lua = lib.Lua;
 const Parser = lib.HttpParser;
 const ConnectionContext = @import("ConnectionContext.zig");
-const MemStack = lib.MemStack;
 const Future = @import("Future.zig");
 const ConnectionPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
 const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
@@ -27,72 +29,45 @@ const Dir = struct {
     handle: Io.Handle,
 };
 
-pub fn init(alloc: *std.mem.Allocator, addr: std.net.Address, max_conns: usize, max_futures: usize, max_memory: usize, req_read_size: usize, max_req_size: usize) !Runtime {
+pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory: usize, max_req_size: usize, max_resp_size: usize) !Runtime {
     return .{
-        .stream = try addr.listen(),
-        .io = .init(.{ .entries = @min(max_futures, std.math.maxInt(u16)) }),
+        .io = try .init(.{ .entries = @min(max_futures, std.math.maxInt(u16)) }),
         .lua = try Lua.init(.{ .allocator = alloc }),
-        .connection_pool = .initPreheated(alloc.*, max_conns),
-        .event_pool = .initPreheated(alloc.*, max_futures + 1),
-        .future_pool = .initPreheated(alloc.*, max_futures + 1),
-        .memstack = .init(alloc.*, max_memory, @divFloor(max_memory, max_conns)),
-        .max_req_size = max_req_size,
-        .req_read_size = req_read_size,
+        .connection_pool = try .initPreheated(alloc.*, max_conns),
+        .event_pool = try .initPreheated(alloc.*, max_futures + 2),
+        .future_pool = try .initPreheated(alloc.*, max_futures + 1),
+        .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
+        .conn_slab_size = @divFloor(max_conns, max_memory),
+        .max_req = max_req_size,
+        .max_resp = max_resp_size,
     };
 }
-pub fn deinit(r: *Runtime, alloc: std.mem.Allocator) void {
-    r.stream.close();
+pub fn deinit(r: *Runtime) void {
+    r.server.deinit();
     r.io.deinit();
     r.lua.deinit();
-    r.memstack.deinit(alloc);
+    r.slab.reset();
     r.connection_pool.deinit();
     r.event_pool.deinit();
-    alloc.free(r.temp);
 }
 
-pub fn setupConnection(f: *Future, r: *Runtime, _: *ConnectionContext) void {
-    const event = r.event_pool.create() catch {};
-    event.* = .accept(&f, r.stream.handle);
-    f.ctxt = event;
-    r.io.submit(event) catch {};
+pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
+    const alloc = r.slab.allocator();
+    r.server = try addr.listen(.{});
+    for (0..connections) |_| {
+        const conn: *ConnectionContext = try r.connection_pool.create();
+        const event = try r.event_pool.create();
+        const future = try r.future_pool.create();
+        conn.* = try .init(
+            alloc,
+            r.conn_slab_size,
+            r.max_req,
+            r.max_resp,
+        );
+        conn.rearm(&r.io, future, event, r.server.stream.handle);
+    }
 }
 
-pub fn acceptConnections(r: *Runtime, fut: *Future, event: *Io.Event) void {
-    const cb = struct {
-        fn wake(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) Future.State {
-            std.debug.assert(event.status.complete == .accept);
-
-            const handle = event.status.complete.accept.ret catch return .failed;
-
-            const conn = r.connection_pool.create() catch return .failed;
-            const thread = r.lua.newThread() catch return .failed;
-
-            conn.* = ConnectionContext.init(handle, thread, r.memstack.acquire(), 4096, 1024) catch return .failed;
-
-            //make this a function
-            const future = r.future_pool.create() catch return .failed;
-            const ev = r.event_pool.create() catch return .failed;
-
-            conn.readAndStart(r.io, future, ev);
-            //NOTE: never finishes as ong as server is running
-            return .waiting;
-        }
-        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
-            return;
-        }
-    };
-    event.* = .accept(fut, r.stream.handle);
-    fut.* = .{
-        //NOTE: conn is never utilized for accepting new connections
-        .conn = @ptrFromInt(0),
-        .ctxt = event,
-        .vtable = .{
-            .wake = cb.wake,
-            .cancel = cb.cancel,
-        },
-    };
-    r.io.submit(event) catch {};
-}
 pub fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, ctxt: *anyopaque) void {
     const event: Io.Event = @ptrCast(ctxt);
     std.debug.print("Failed to setup a connection, {any}", .{event});

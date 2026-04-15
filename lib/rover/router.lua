@@ -1,5 +1,8 @@
 local M = {}
 
+--TODO: Handle chunck encoding/streamed bodies of request
+--and allow seting max header size
+
 ---@class streamOptions
 ---@field length integer
 ---@field read_length integer
@@ -9,7 +12,7 @@ local M = {}
 ---@class Connection
 ---@field host string
 ---@field method "GET" | "PUT" | "POST" | "PATCH" | "DELETE"
----@field req_headers string[]
+---@field req_headers table
 ---@field path_info string[]
 ---@field request_path string
 ---@field scheme string
@@ -17,10 +20,9 @@ local M = {}
 ---@field query_string string
 ---@field query_parmas string
 ---@field stream stream raw body that has not been parsed returned as a byte stream
----@field parsed_body any null unless populated by a plug
+---@field body any null unless content length is present
 ---@field assigns table passed from plugs
----@field config table immutable passed form the rover.load function
----@field shared_dict userdata passed to all instances of your application
+---@field shared table  values from the rover.load function
 ---@field port number
 
 ---@class HttpResponse

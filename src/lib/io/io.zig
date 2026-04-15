@@ -86,7 +86,8 @@ test "simple connection test" {
     const client_thread = try std.Thread.spawn(.{}, clientcb.createconnection, .{server.listen_address});
     defer client_thread.join();
 
-    var accept_ev = Event.accept(&.{}, server.stream.handle);
+    var client_addr: std.net.Address = undefined;
+    var accept_ev = Event.accept(&.{}, server.stream.handle, &client_addr);
     try io.submit(&accept_ev);
 
     var q = try io.flush(1);

@@ -38,7 +38,10 @@ pub fn deinit(self: *IO) void {
 pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!void {
     std.debug.assert(event.status == .pending);
     _ = sqe: switch (event.status.pending) {
-        .accept => |a| self.iouring.accept_multishot(@intFromPtr(event), a.handle, null, null, 0),
+        .accept => |a| {
+            break :sqe self.iouring.accept(@intFromPtr(event), a.handle, &a.addr.any, @constCast(&a.addr_len), 0);
+        },
+        .accept_multishot => |a| self.iouring.accept_multishot(@intFromPtr(event), a.handle, null, null, 0),
         .openat => |o| {
             const path_z = std.posix.toPosixPath(o.path) catch return error.PathTooLong;
 
@@ -103,6 +106,29 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
             event.status = .{
                 .complete = .{
                     .accept = switch (cqe.err()) {
+                        .SUCCESS => cqe.res,
+                        .AGAIN => AcceptError.WouldBlock,
+                        //.WOULDBLOCK => AcceptError.WouldBlock,
+                        .CONNABORTED => AcceptError.ConnectionAborted,
+                        .INTR => AcceptError.Interrupted,
+                        .INVAL => AcceptError.InvalidArgument,
+                        .MFILE => AcceptError.TooManyOpenFiles,
+                        .NFILE => AcceptError.SystemFileLimit,
+                        .NOBUFS => AcceptError.NoBufferSpace,
+                        .NOMEM => AcceptError.OutOfMemory,
+                        .NOTSOCK => AcceptError.NotSocket,
+                        .OPNOTSUPP => AcceptError.OperationNotSupported,
+                        .BADF => AcceptError.InvalidFileDescriptor,
+                        .PROTO => AcceptError.ProtocolError,
+                        else => AcceptError.Unexpected,
+                    },
+                },
+            };
+        },
+        .accept_multishot => {
+            event.status = .{
+                .complete = .{
+                    .accept_multishot = switch (cqe.err()) {
                         .SUCCESS => cqe.res,
                         .AGAIN => AcceptError.WouldBlock,
                         //.WOULDBLOCK => AcceptError.WouldBlock,
