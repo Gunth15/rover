@@ -5,7 +5,7 @@ const Future = @import("Future.zig");
 const Runtime = @import("Runtime.zig");
 
 const MAXCONNECTIONS = 1;
-const MAXMEMORY = 4096 * 20;
+const MAXMEMORY = 4096 * 3;
 const MAXEVENTS = MAXCONNECTIONS * 2;
 const TOTALHEADERS = 10;
 const MAXREAD = 4096;
@@ -16,10 +16,10 @@ const HELP =
     \\Rover 0.0.1
     \\Cameron W.
     \\
-    \\Usage: All-in-one system for making speedy web apps in Lua
+    \\Usage: All-in-one framewoek for making speedy web apps in Lua
     \\
     \\Commands:
-    \\  Run         Runs your lua program. Assumes main.lua if file not specified
+    \\  run         Runs your lua program. Assumes main.lua if file not specified
     \\Options:
     \\  -f, -file   Specify which file to use
     \\

@@ -1,7 +1,6 @@
-print("Loaded file")
 function rover.routes()
 	return {
-		{ "/", GET = Hello },
+		["/"] = { GET = Hello },
 	}
 end
 

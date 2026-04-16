@@ -35,15 +35,20 @@ const Thread = struct {
         //send connection
         const thread: *Lua = &t.lthread;
 
-        std.debug.assert(thread.getGlobal("rover.routing.table") == .table);
+        std.debug.assert(thread.getGlobal("rover") == .table);
+        std.debug.assert(thread.getField(-1, "routing_table") == .table);
 
-        const alloc = conn.slab.allocator();
-        const path_buf = alloc.alloc(u8, req.path.len + 1) catch @panic("No memory");
-        @memcpy(path_buf[0..req.path.len], req.path);
-        path_buf[req.path.len] = 0;
+        var alloc = conn.slab.allocator();
+
+        const path_buf = alloc.dupeZ(u8, req.path) catch @panic("No memory");
         defer alloc.free(path_buf);
 
-        if (thread.getField(-1, @ptrCast(path_buf)) != .func) thread.fmtError("Invalid handler type", .{});
+        const method_buf = alloc.dupeZ(u8, req.method) catch @panic("No memory");
+        defer alloc.free(method_buf);
+
+        std.debug.print("Getting handler for path {s} with method {s}\n", .{ path_buf, method_buf });
+        if (thread.getField(-1, path_buf) != .table) @panic("Handler not found or is not a function TODO: handle gracefully");
+        if (thread.getField(-1, method_buf) != .func) @panic("Handler not found or is not a function TODO: handle gracefully");
 
         thread.newTable();
         thread.push(req.headers.get("Host"));
@@ -89,13 +94,18 @@ pub inline fn init(slab: std.mem.Allocator, mem_size: usize, reader_size: usize,
         .allocation_fail_count = 0,
     };
 }
-pub inline fn reset(conn: *ConnectionContext) !ConnectionContext {
+pub inline fn reset(conn: *ConnectionContext) !void {
+    const writer_size = conn.writer.buf.len;
+    const reader_size = conn.reader.buf.len;
     conn.addr = undefined;
-    conn.slab.reset();
     conn.handle = undefined;
-    conn.threads = .{};
-    conn.reader.reset();
+    conn.slab.reset();
+    const alloc = conn.slab.allocator();
+    conn.reader = try .init(alloc, reader_size);
+    conn.writer = try .init(alloc, writer_size);
     conn.allocation_fail_count = 0;
+    conn.req_bytes_read = 0;
+    conn.total_bytes_read = 0;
 }
 pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !Thread {
     const lthread = try lua.newThread();
@@ -116,7 +126,7 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
         lua.unref(thread.ref);
     }
 
-    const str = thread.lthread.to(Lua.String, 0) catch @panic("Return value is not a string");
+    const str = thread.lthread.to(Lua.String, -1) catch @panic("Return value is not a string");
     const wrote = conn.writer.fill(str);
     if (wrote != str.len) @panic("Full return string not written, TODO: handle this case");
 }
@@ -178,7 +188,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 
             conn.total_bytes_read += read_bytes;
             conn.req_bytes_read += read_bytes;
-            std.debug.print("Reading connection:\n--------------------\n{s}\n", .{parsable});
+            std.debug.print("Reading connection:\n--------------------\n{s}\n--------------------\n", .{parsable});
             const req = Parser.parse(parsable, conn.slab.allocator(), 64, prev_bytes_read) catch |e| {
                 switch (e) {
                     error.PartialRequest => {
@@ -192,7 +202,6 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
                     },
                 }
             };
-            std.debug.print("HTTP requets parsed\n", .{});
 
             reader.consumeHead(req.size);
             conn.req_bytes_read -= req.size;
@@ -201,8 +210,10 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             //TODO: if connection is keep-alive, read again until timeout or close is sent by user
             //SEND ANOTHER READ
 
+            std.debug.print("Starting hander\n", .{});
             var thread = conn.start(&r.lua, req) catch |e| @panic(@typeName(@TypeOf(e)));
             conn.stop(&r.lua, &thread);
+            std.debug.print("Hander stopped\n", .{});
             conn.write(&r.io, f, ev);
             return .waiting;
         }
@@ -236,7 +247,8 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
                 conn.writeIo(&r.io, f, ev);
                 return .waiting;
             }
-            return .finished;
+            conn.close(&r.io, f, ev);
+            return .waiting;
         }
         fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) void {
             const ev: *Io.Event = @ptrCast(@alignCast(ptr));
@@ -258,9 +270,9 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
 fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
-            std.debug.print("Closing new connection\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(ptr));
             std.debug.print("Connection closed", .{});
+            conn.reset() catch @panic("Failed to reset Connection");
             conn.rearm(&r.io, f, ev, r.server.stream.handle);
             return .waiting;
         }

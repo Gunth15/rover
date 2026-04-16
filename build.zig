@@ -29,7 +29,6 @@ pub fn build(b: *std.Build) void {
     });
     pico_lib.addCSourceFile(.{ .file = b.path("./src/lib/httpparser/picohttpparser.c") });
     lib.linkLibrary(pico_lib);
-    lib.addIncludePath(b.path("./src/lib/httpparser"));
 
     //liblua
     const lua_lib = b.addLibrary(.{
@@ -54,9 +53,9 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{"-DLUA_COMPAT_5_3"},
     });
-    lua_lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
-
     lib.linkLibrary(lua_lib);
+
+    lib.addIncludePath(b.path("src/lib/httpparser"));
     lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
 
     //exe
@@ -67,7 +66,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_module.linkLibrary(lib);
     const exe = b.addExecutable(.{ .name = "rover", .root_module = exe_module });
-    exe.addIncludePath(b.path("./src/lib/httpparser"));
+    exe.addIncludePath(b.path("src/lib/httpparser"));
     exe.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
     b.installArtifact(exe);
 
