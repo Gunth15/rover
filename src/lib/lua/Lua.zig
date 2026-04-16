@@ -42,19 +42,22 @@ const LuaType = enum(c_int) {
     thread = c.LUA_TTHREAD,
 };
 
+pub const RegistryIndex: isize = @intCast(c.LUA_REGISTRYINDEX);
+pub const RegistryIndexMainThread: isize = @intCast(c.LUA_RIDX_MAINTHREAD);
+
 //have to use pointer
 pub const Options = struct {
-    allocator: ?*const std.mem.Allocator,
+    allocator: ?*const std.mem.Allocator = null,
     seed: usize = 0,
 };
 pub fn init(op: Options) error{OutOfMemory}!LuaState {
     if (op.allocator) |a| {
         return .{
-            .state = c.lua_newstate(alloctorFn, @constCast(a), @intCast(op.seed)) orelse return error.OutOfMemory,
+            .state = c.lua_newstate(allocatorFn, @constCast(a)) orelse return error.OutOfMemory,
         };
     } else {
         return .{
-            .state = c.lua_newstate(null, null, @intCast(op.seed)) orelse return error.OutOfMemory,
+            .state = c.luaL_newstate() orelse return error.OutOfMemory,
         };
     }
 }
@@ -97,7 +100,7 @@ pub fn loadFile(l: *LuaState, file_name: [:0]const u8) LoadError!void {
     }
 }
 //add traceback as msgh
-const CallError = error{ RuntimeError, AllocationError, HandlerError,
+pub const CallError = error{ RuntimeError, AllocationError, HandlerError,
     //Not realy an error, but somet;hing that can happen
     Yielded } || TypeError;
 //If this function is yielded or an error occurs, you have to use L.yieldresult or l.errorresult() to form the error
@@ -324,8 +327,8 @@ pub fn createTable(l: *LuaState, sequenced: isize, expected: isize) void {
 pub fn argCheck(l: *LuaState, cond: bool, arg: usize, msg: [*:0]const u8) void {
     _ = c.luaL_argcheck(l.state, cond, arg, msg.ptr);
 }
-pub fn Luatype(l: *LuaState, index: usize) LuaType {
-    return @enumFromInt(c.lua_type(l.state, @as(c_int, index)));
+pub fn Luatype(l: *LuaState, index: isize) LuaType {
+    return @enumFromInt(c.lua_type(l.state, @intCast(index)));
 }
 pub fn checkAny(l: *LuaState, arg: usize) void {
     c.luaL_checkany(l.state, arg);
@@ -372,7 +375,7 @@ pub fn setI(l: *LuaState, index: isize, i: isize) void {
 }
 //use these for tables without metadata
 pub fn getRawI(l: *LuaState, index: isize, n: isize) LuaType {
-    return @enumFromInt(c.lua_rawgeti(l.state, @as(c_int, index), @as(c.lua_Integer, n)));
+    return @enumFromInt(c.lua_rawgeti(l.state, @intCast(index), @intCast(n)));
 }
 pub fn setRawI(l: *LuaState, index: isize, i: isize) void {
     c.lua_rawseti(l.state, @as(c_int, index), @as(c_longlong, i));
@@ -467,8 +470,8 @@ fn toLuaFuntcion(comptime func: anytype) Function {
     };
     return closure.close;
 }
-fn alloctorFn(ap: ?*anyopaque, ptr: ?*anyopaque, old_size: usize, new_size: usize) callconv(.c) ?*anyopaque {
-    const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ap orelse unreachable));
+fn allocatorFn(ap: ?*anyopaque, ptr: ?*anyopaque, old_size: usize, new_size: usize) callconv(.c) ?*anyopaque {
+    const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ap orelse return null));
 
     // free
     if (new_size == 0) {

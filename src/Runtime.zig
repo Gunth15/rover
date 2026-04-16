@@ -37,7 +37,7 @@ pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usiz
         .event_pool = try .initPreheated(alloc.*, max_futures + 2),
         .future_pool = try .initPreheated(alloc.*, max_futures + 1),
         .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
-        .conn_slab_size = @divFloor(max_conns, max_memory),
+        .conn_slab_size = @max(1, @divFloor(max_memory, max_conns)),
         .max_req = max_req_size,
         .max_resp = max_resp_size,
     };
@@ -52,6 +52,7 @@ pub fn deinit(r: *Runtime) void {
 }
 
 pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
+    std.debug.print("TOTAL MEMORY PER CONN: {d}", .{r.conn_slab_size});
     const alloc = r.slab.allocator();
     r.server = try addr.listen(.{});
     for (0..connections) |_| {

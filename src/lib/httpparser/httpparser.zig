@@ -7,7 +7,6 @@ pub const Headers = std.StringArrayHashMapUnmanaged([]const u8);
 pub const Request = struct {
     method: []const u8,
     path: []const u8,
-    body: ?[]const u8,
     minor_version: u64,
     headers: Headers,
     //size of request in bytes
@@ -57,14 +56,8 @@ pub fn parse(buffer: []const u8, alloc: std.mem.Allocator, max_headers: usize, p
         req.headers.putAssumeCapacity(name, value);
     }
 
-    const content_length = req.headers.get("Content-Length") orelse {
-        req.body = null;
-        return req;
-    };
-    const bod_length = std.fmt.parseInt(usize, content_length, 10) catch return error.InvalidBodyLength;
     const header_len: usize = @intCast(header_bytes);
-    req.size = header_len + bod_length;
-    req.body = buffer[header_len..req.size];
+    req.size = header_len;
 
     const encoding = req.headers.get("Transfer-Encoding") orelse return req;
     if (std.ascii.eqlIgnoreCase("chunked", encoding)) return error.Chunked;
@@ -88,9 +81,6 @@ test "parse basic HTTP request with body" {
     const host = req.headers.get("Host").?;
     try std.testing.expectEqualStrings("example.com", host);
 
-    const body = req.body.?;
-    try std.testing.expectEqualStrings("hello", body);
-
     const req_size = req.size;
-    try std.testing.expect(request.len == req_size);
+    try std.testing.expect(request.len - 5 == req_size);
 }

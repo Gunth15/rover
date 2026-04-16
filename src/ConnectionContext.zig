@@ -65,9 +65,6 @@ const Thread = struct {
         //thread.push(req.scheme);
         //thread.setField(-2, "scheme");
 
-        thread.push(req.body);
-        thread.setField(-2, "body");
-
         //TODO: Assigns
         //thread.push(req.scheme);
 
@@ -81,13 +78,14 @@ const Thread = struct {
     }
 };
 pub inline fn init(slab: std.mem.Allocator, mem_size: usize, reader_size: usize, writer_size: usize) !ConnectionContext {
-    const conn_slab = std.heap.FixedBufferAllocator.init(
+    var conn_slab = std.heap.FixedBufferAllocator.init(
         try slab.alloc(u8, mem_size),
     );
+    const alloc = conn_slab.allocator();
     return .{
         .slab = conn_slab,
-        .reader = try .init(slab, reader_size),
-        .writer = try .init(slab, writer_size),
+        .reader = try .init(alloc, reader_size),
+        .writer = try .init(alloc, writer_size),
         .allocation_fail_count = 0,
     };
 }
@@ -100,9 +98,8 @@ pub inline fn reset(conn: *ConnectionContext) !ConnectionContext {
     conn.allocation_fail_count = 0;
 }
 pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !Thread {
-    var l = lua;
-    const lthread = try l.newThread();
-    const ref = l.ref();
+    const lthread = try lua.newThread();
+    const ref = lua.ref();
     var thread: Thread = .{
         .arena = std.heap.ArenaAllocator.init(conn.slab.allocator()),
         .ref = ref,
@@ -128,6 +125,7 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
 pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, server_handle: Io.Handle) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            std.debug.print("New connection started\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(ptr));
             std.debug.assert(ev.status == .complete);
             std.debug.assert(ev.status.complete == .accept);
@@ -143,7 +141,7 @@ pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, ser
     event.* = .accept(fut, server_handle, &c.addr);
     fut.* = .{
         .conn = c,
-        .ctxt = fut,
+        .ctxt = event,
         .vtable = &.{
             .wake = cb.wake,
             .cancel = cb.cancel,
@@ -180,6 +178,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 
             conn.total_bytes_read += read_bytes;
             conn.req_bytes_read += read_bytes;
+            std.debug.print("Reading connection:\n--------------------\n{s}\n", .{parsable});
             const req = Parser.parse(parsable, conn.slab.allocator(), 64, prev_bytes_read) catch |e| {
                 switch (e) {
                     error.PartialRequest => {
@@ -187,12 +186,17 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
                         conn.readIo(&r.io, f, ev);
                         return .waiting;
                     },
-                    else => return .failed,
+                    else => {
+                        std.debug.print("Faled to read: {any}\n", .{e});
+                        return .failed;
+                    },
                 }
             };
+            std.debug.print("HTTP requets parsed\n", .{});
 
             reader.consumeHead(req.size);
             conn.req_bytes_read -= req.size;
+            std.debug.print("Total Bytes read: {d}\nRequest Size: {d}\n", .{ conn.total_bytes_read, req.size });
 
             //TODO: if connection is keep-alive, read again until timeout or close is sent by user
             //SEND ANOTHER READ
@@ -221,6 +225,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            std.debug.print("Writing new connection\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(ptr));
             std.debug.assert(ev.status.complete == .writev);
             const written = ev.status.complete.writev catch return .failed;
@@ -253,6 +258,7 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
 fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+            std.debug.print("Closing new connection\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(ptr));
             std.debug.print("Connection closed", .{});
             conn.rearm(&r.io, f, ev, r.server.stream.handle);

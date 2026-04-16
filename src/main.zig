@@ -1,14 +1,15 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
+const Lua = @import("lib/lib.zig").Lua;
 const Future = @import("Future.zig");
 const Runtime = @import("Runtime.zig");
 
-const MAXCONNECTIONS = 64;
-const MAXMEMORY = 4096 * 5;
+const MAXCONNECTIONS = 1;
+const MAXMEMORY = 4096 * 20;
 const MAXEVENTS = MAXCONNECTIONS * 2;
 const TOTALHEADERS = 10;
-const READSIZE = 1024;
-const MAXREADSIZE = 4096;
+const MAXREAD = 4096;
+const MAXWRITE = 4096;
 var SHUTDOWN = false;
 
 const HELP =
@@ -39,8 +40,8 @@ pub fn main() !void {
         MAXCONNECTIONS,
         MAXEVENTS,
         MAXMEMORY,
-        READSIZE,
-        MAXREADSIZE,
+        MAXREAD,
+        MAXWRITE,
     );
     defer runtime.deinit();
 
@@ -48,14 +49,30 @@ pub fn main() !void {
     runtime.lua.newTable();
     runtime.lua.setGlobal("rover");
     try runtime.lua.loadFile("./examples/simple/main.lua");
-    _ = try runtime.lua.pcall(0, 0);
+    runtime.lua.pcall(0, 0) catch |e| {
+        if (e == lib.Lua.CallError.RuntimeError) {
+            const err = try runtime.lua.to(Lua.String, -1);
+            std.debug.print("Runtime error: {s}\n", .{err});
+        }
+        return e;
+    };
 
+    //rover.routing_table = rover.routes()
     if (runtime.lua.getGlobal("rover") != .table) @panic("rover could not be found");
     if (runtime.lua.getField(-1, "routes") != .func) @panic("rover.routes is not a function");
+    runtime.lua.pcall(0, 1) catch |e| {
+        if (e == lib.Lua.CallError.RuntimeError) {
+            const err = try runtime.lua.to(Lua.String, -1);
+            std.debug.print("Runtime error: {s}\n", .{err});
+        }
+        std.debug.print("Unrecoverable Error: {any}\n", .{e});
+        @panic("Unrecoverable state");
+    };
+    runtime.lua.setField(-2, "routing_table");
+    runtime.lua.pop(1);
 
-    runtime.lua.pcall(0, 1);
-    //TODO:: check type too
-    runtime.lua.setGlobal("rover.rouing_table");
+    const t = runtime.lua.getRawI(Lua.RegistryIndex, Lua.RegistryIndexMainThread);
+    std.debug.print("registry type: {s}\n", .{@tagName(t)});
 
     //run rover.load function
     //save global to be shared between threads

@@ -1,12 +1,6 @@
 .{
     .name = .rover,
     .version = "0.15.2",
-    .dependencies = .{
-        .lua = .{
-            .url = "src/lib/lua/lua_5.4.8",
-            .hash = "N-V-__8AAAZW0AEAjMgQrEczVm9IzDBgTgE4bGGHLKm2DZ2i",
-        },
-    },
     .paths = .{""},
     .fingerprint = 0xd08838f7aa9b01f7,
 }

@@ -12,20 +12,52 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     const lib = b.addLibrary(.{
-        .name = "librover",
+        .name = "rover",
         .linkage = .static,
         .root_module = lib_module,
     });
 
     //libpco
-    lib.addCSourceFile(.{ .file = b.path("./src/lib/httpparser/picohttpparser.c") });
+    const pico_lib = b.addLibrary(.{
+        .name = "pico",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    pico_lib.addCSourceFile(.{ .file = b.path("./src/lib/httpparser/picohttpparser.c") });
+    lib.linkLibrary(pico_lib);
     lib.addIncludePath(b.path("./src/lib/httpparser"));
 
-    //link lua
-    const lua_dep = b.dependency("lua", .{});
-    const lua_lib = lua_dep.artifact("lua");
+    //liblua
+    const lua_lib = b.addLibrary(.{
+        .name = "lua",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    lua_lib.addCSourceFiles(.{
+        .root = b.path("src/lib/lua/lua_5.4.8/src"),
+        .files = &.{
+            "lapi.c",     "lcode.c",    "lctype.c",   "ldebug.c",  "ldo.c",
+            "ldump.c",    "lfunc.c",    "lgc.c",      "llex.c",    "lmem.c",
+            "lobject.c",  "lopcodes.c", "lparser.c",  "lstate.c",  "lstring.c",
+            "ltable.c",   "ltm.c",      "lundump.c",  "lvm.c",     "lzio.c",
+            "lauxlib.c",  "lbaselib.c", "lcorolib.c", "ldblib.c",  "liolib.c",
+            "lmathlib.c", "loadlib.c",  "loslib.c",   "lstrlib.c", "ltablib.c",
+            "lutf8lib.c", "linit.c",
+        },
+        .flags = &.{"-DLUA_COMPAT_5_3"},
+    });
+    lua_lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
+
     lib.linkLibrary(lua_lib);
-    b.installArtifact(lib);
+    lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
 
     //exe
     const exe_module = b.createModule(.{
@@ -36,6 +68,7 @@ pub fn build(b: *std.Build) void {
     exe_module.linkLibrary(lib);
     const exe = b.addExecutable(.{ .name = "rover", .root_module = exe_module });
     exe.addIncludePath(b.path("./src/lib/httpparser"));
+    exe.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
     b.installArtifact(exe);
 
     //test
