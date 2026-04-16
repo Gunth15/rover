@@ -16,7 +16,7 @@ const HELP =
     \\Rover 0.0.1
     \\Cameron W.
     \\
-    \\Usage: All-in-one framewoek for making speedy web apps in Lua
+    \\Usage: All-in-one framework for making speedy web apps in Lua
     \\
     \\Commands:
     \\  run         Runs your lua program. Assumes main.lua if file not specified
