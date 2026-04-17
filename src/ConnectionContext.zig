@@ -38,17 +38,9 @@ const Thread = struct {
         std.debug.assert(thread.getGlobal("rover") == .table);
         std.debug.assert(thread.getField(-1, "routing_table") == .table);
 
-        var alloc = conn.slab.allocator();
-
-        const path_buf = alloc.dupeZ(u8, req.path) catch @panic("No memory");
-        defer alloc.free(path_buf);
-
-        const method_buf = alloc.dupeZ(u8, req.method) catch @panic("No memory");
-        defer alloc.free(method_buf);
-
-        std.debug.print("Getting handler for path {s} with method {s}\n", .{ path_buf, method_buf });
-        if (thread.getField(-1, path_buf) != .table) @panic("Handler not found or is not a function TODO: handle gracefully");
-        if (thread.getField(-1, method_buf) != .func) @panic("Handler not found or is not a function TODO: handle gracefully");
+        std.debug.print("Getting handler for path {s} with method {s}\n", .{ req.path, req.method });
+        if (thread.getField(-1, req.path) != .table) @panic("Handler not found or is not a function TODO: handle gracefully");
+        if (thread.getField(-1, req.method) != .func) @panic("Handler not found or is not a function TODO: handle gracefully");
 
         thread.newTable();
         thread.push(req.headers.get("Host"));

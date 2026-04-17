@@ -5,6 +5,6 @@ function rover.routes()
 end
 
 function Hello(_)
-	return "<h1>Welcome</h1>"
+	return "<h1>Welcome</h1>\n"
 	-- conn:send_bytes("<h1>Welcome</h1>")
 end

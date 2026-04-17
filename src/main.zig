@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = @import("std").log;
 const lib = @import("lib/lib.zig");
 const Lua = @import("lib/lib.zig").Lua;
 const Future = @import("Future.zig");

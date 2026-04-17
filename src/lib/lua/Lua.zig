@@ -149,7 +149,7 @@ pub fn push(l: *LuaState, arg: anytype) void {
         .optional => if (arg) |val| l.push(val) else c.lua_pushnil(l.state),
         //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
         .pointer => |info| {
-            if (info.size == .slice and info.child == u8 and info.is_const) {
+            if ((info.size == .slice or info.size == .many) and info.child == u8 and info.is_const) {
                 _ = c.lua_pushlstring(l.state, arg.ptr, arg.len);
                 return;
             }
@@ -380,11 +380,16 @@ pub fn getRawI(l: *LuaState, index: isize, n: isize) LuaType {
 pub fn setRawI(l: *LuaState, index: isize, i: isize) void {
     c.lua_rawseti(l.state, @as(c_int, index), @as(c_longlong, i));
 }
-pub fn setField(l: *LuaState, index: isize, key: [:0]const u8) void {
-    return c.lua_setfield(l.state, @intCast(index), key);
+pub fn setField(l: *LuaState, index: isize, key: []const u8) void {
+    const abs = c.lua_absindex(l.state, @intCast(index));
+    l.push(key);
+    c.lua_insert(l.state, -2);
+    return c.lua_settable(l.state, abs);
 }
-pub fn getField(l: *LuaState, index: isize, name: [:0]const u8) LuaType {
-    return @enumFromInt(c.lua_getfield(l.state, @intCast(index), name));
+pub fn getField(l: *LuaState, index: isize, name: []const u8) LuaType {
+    const abs = c.lua_absindex(l.state, @intCast(index));
+    l.push(name);
+    return @enumFromInt(c.lua_gettable(l.state, abs));
 }
 pub fn getTop(l: *LuaState) isize {
     return @intCast(c.lua_gettop(l.state));
