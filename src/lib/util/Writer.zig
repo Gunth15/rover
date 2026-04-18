@@ -12,7 +12,7 @@ end: usize = 0,
 buf: []u8,
 
 pub fn init(alloc: std.mem.Allocator, n: usize) !Writer {
-    const size = try std.math.ceilPowerOfTwo(n);
+    const size = try std.math.ceilPowerOfTwo(usize, n);
     return .{
         .buf = try alloc.alloc(u8, size),
     };

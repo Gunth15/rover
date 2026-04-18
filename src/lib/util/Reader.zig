@@ -13,7 +13,7 @@ const Slice = struct {
 };
 
 pub fn init(alloc: std.mem.Allocator, n: usize) !Reader {
-    const size = try std.math.ceilPowerOfTwo(n);
+    const size = try std.math.ceilPowerOfTwo(usize, n);
     return .{
         .buf = try alloc.alloc(u8, size),
     };

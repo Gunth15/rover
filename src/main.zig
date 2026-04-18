@@ -56,7 +56,6 @@ inline fn run(args: parser.Args) !void {
         }
     }
     const alloc = debug_allocator.allocator();
-    const file = args.file;
 
     var runtime: Runtime = try .init(
         &alloc,
@@ -71,25 +70,21 @@ inline fn run(args: parser.Args) !void {
     //load main file(allow user to define path to file)
     runtime.lua.newTable();
     runtime.lua.setGlobal("rover");
-    runtime.lua.loadFile(file) catch {
+    runtime.lua.loadFile(args.file) catch {
         const err = try runtime.lua.to(Lua.String, -1);
-        fatal("Error loading main.lua({s}): {s}", .{ file, err }, 1);
+        fatal("Error loading file: {s}", .{err}, 1);
     };
     runtime.lua.pcall(0, 0) catch {
         const err = try runtime.lua.to(Lua.String, -1);
-        fatal("Error initializing main.lua({s}): {s}", .{ file, err }, 1);
+        fatal("Error during initialization: {s}", .{err}, 1);
     };
 
     //rover.routing_table = rover.routes()
     if (runtime.lua.getGlobal("rover") != .table) @panic("rover could not be found");
     if (runtime.lua.getField(-1, "routes") != .func) @panic("rover.routes is not a function");
-    runtime.lua.pcall(0, 1) catch |e| {
-        if (e == lib.Lua.CallError.RuntimeError) {
-            const err = try runtime.lua.to(Lua.String, -1);
-            std.debug.print("Runtime error: {s}\n", .{err});
-        }
-        std.debug.print("Unrecoverable Error: {any}\n", .{e});
-        @panic("Unrecoverable state");
+    runtime.lua.pcall(0, 1) catch {
+        const err = try runtime.lua.to(Lua.String, -1);
+        fatal("Unrecoverable state reached: {s}\n", .{err}, 1);
     };
     runtime.lua.setField(-2, "routing_table");
     runtime.lua.pop(1);
@@ -119,7 +114,7 @@ inline fn help() !void {
 pub fn main() !void {
     const args = parser.parse();
     switch (args.command) {
-        .help => help(),
-        .run => run(args),
+        .help => return help(),
+        .run => return run(args),
     }
 }

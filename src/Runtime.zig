@@ -9,8 +9,8 @@ event_pool: EventPool,
 future_pool: FuturePool,
 slab: std.heap.FixedBufferAllocator,
 conn_slab_size: usize,
-max_req: usize,
-max_resp: usize,
+max_read: usize,
+max_write: usize,
 const std = @import("std");
 const lib = @import("lib/lib.zig");
 const Io = lib.Io;
@@ -32,7 +32,7 @@ const Dir = struct {
 pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
     const add = std.math.add;
     const mul = std.math.mul;
-    const mem_per_conn = try add(usize, max_memory_per_connection, try add(max_write, max_read));
+    const mem_per_conn = try add(usize, max_memory_per_connection, try add(usize, max_write, max_read));
     const max_memory = try mul(usize, max_conns, mem_per_conn);
     const io = try std.math.ceilPowerOfTwo(usize, max_futures);
     return .{
