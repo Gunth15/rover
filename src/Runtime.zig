@@ -29,17 +29,22 @@ const Dir = struct {
     handle: Io.Handle,
 };
 
-pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory: usize, max_req_size: usize, max_resp_size: usize) !Runtime {
+pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
+    const add = std.math.add;
+    const mul = std.math.mul;
+    const mem_per_conn = try add(usize, max_memory_per_connection, try add(max_write, max_read));
+    const max_memory = try mul(usize, max_conns, mem_per_conn);
+    const io = try std.math.ceilPowerOfTwo(usize, max_futures);
     return .{
-        .io = try .init(.{ .entries = @min(max_futures, std.math.maxInt(u16)) }),
+        .io = try .init(.{ .entries = @min(io, std.math.maxInt(u16)) }),
         .lua = try Lua.init(.{ .allocator = alloc }),
         .connection_pool = try .initPreheated(alloc.*, max_conns),
-        .event_pool = try .initPreheated(alloc.*, max_futures + 2),
-        .future_pool = try .initPreheated(alloc.*, max_futures + 1),
+        .event_pool = try .initPreheated(alloc.*, io + 1),
+        .future_pool = try .initPreheated(alloc.*, io + 1),
         .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
-        .conn_slab_size = @max(1, @divFloor(max_memory, max_conns)),
-        .max_req = max_req_size,
-        .max_resp = max_resp_size,
+        .conn_slab_size = mem_per_conn,
+        .max_read = max_read,
+        .max_write = max_write,
     };
 }
 pub fn deinit(r: *Runtime) void {
@@ -52,7 +57,6 @@ pub fn deinit(r: *Runtime) void {
 }
 
 pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
-    std.debug.print("TOTAL MEMORY PER CONN: {d}", .{r.conn_slab_size});
     const alloc = r.slab.allocator();
     r.server = try addr.listen(.{});
     for (0..connections) |_| {
@@ -62,8 +66,8 @@ pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
         conn.* = try .init(
             alloc,
             r.conn_slab_size,
-            r.max_req,
-            r.max_resp,
+            r.max_read,
+            r.max_write,
         );
         conn.rearm(&r.io, future, event, r.server.stream.handle);
     }

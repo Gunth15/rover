@@ -12,9 +12,9 @@ end: usize = 0,
 buf: []u8,
 
 pub fn init(alloc: std.mem.Allocator, n: usize) !Writer {
-    std.debug.assert(std.math.isPowerOfTwo(n));
+    const size = try std.math.ceilPowerOfTwo(n);
     return .{
-        .buf = try alloc.alloc(u8, n),
+        .buf = try alloc.alloc(u8, size),
     };
 }
 

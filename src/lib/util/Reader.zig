@@ -13,9 +13,9 @@ const Slice = struct {
 };
 
 pub fn init(alloc: std.mem.Allocator, n: usize) !Reader {
-    std.debug.assert(std.math.isPowerOfTwo(n));
+    const size = try std.math.ceilPowerOfTwo(n);
     return .{
-        .buf = try alloc.alloc(u8, n),
+        .buf = try alloc.alloc(u8, size),
     };
 }
 pub fn deinit(r: *Reader, alloc: std.mem.Allocator) void {

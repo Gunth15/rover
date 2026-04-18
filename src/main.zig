@@ -3,14 +3,9 @@ const lib = @import("lib/lib.zig");
 const Lua = @import("lib/lib.zig").Lua;
 const Future = @import("Future.zig");
 const Runtime = @import("Runtime.zig");
+const parser = @import("parser.zig");
 const main_log = @import("std").log.scoped(.start_up);
 
-const MAXCONNECTIONS = 1;
-const MAXMEMORY = 4096 * 3;
-const MAXEVENTS = MAXCONNECTIONS * 2;
-const TOTALHEADERS = 10;
-const MAXREAD = 4096;
-const MAXWRITE = 4096;
 var SHUTDOWN = false;
 
 const HELP =
@@ -27,91 +22,49 @@ const HELPRUN =
     \\Rover 0.0.1
     \\Cameron W.
     \\
-    \\Usage: rover run [options]
+    \\Usage:
+    \\  rover run [options]
     \\
     \\Options:
-    \\ -c, --connections    Specify Maximum number of connections
-    \\ -m, --memory         Specify Maximum extra memory for a single connection
-    \\ -i, --io             The amount of I/O related events expected 
-    \\ -r, --read           Max read buffer size per connection
-    \\ -w, --write          Max write buffer size per connection
-    \\ -f, --file <file>    Specify the Lua file to use
-    \\ -h, --help           Print the help screen for the run command
+    \\  -c, --connections <n>     Max number of concurrent connections
+    \\  -m, --memory <bytes>      Per-connection memory (non-Lua). Excludes I/O buffers.
+    \\                            Crashes on overflow.
+    \\  -i, --io <n>              Expected I/O events (rounded to next power of two)
+    \\  -r, --read <bytes>        Max read buffer per connection (rounded to power of two)
+    \\  -w, --write <bytes>       Max write buffer per connection (rounded to power of two)
+    \\  -f, --file <path>         Lua script to execute
+    \\  -a, --addr <addr:port>    Address to bind (e.g. 127.0.0.1:8080)
+    \\  -h, --help                Show this help message
     \\
 ;
 
-pub fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
+inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
     main_log.err(fmt, args);
     std.process.exit(status);
 }
 
-const Args = struct {
-    command: enum { run, help } = .help,
-    file: [:0]const u8 = "main.lua",
-    help: bool = false,
-    connections: usize = 500,
-    io: usize = 600,
-    read: usize = 4096,
-    write: usize = 4096,
-    memory: usize = 1024,
-};
-pub fn parse() Args {
-    var args: Args = .{};
-    var iter = std.process.args();
-    _ = iter.next();
-    const command = iter.next() orelse return args;
-    if (std.mem.eql(u8, "help", command)) args.command = .help else if (std.mem.eql(u8, "run", command)) args.command = .run else {
-        main_log.err("Unknown command: {s}\n", .{command});
-        return args;
+inline fn run(args: parser.Args) !void {
+    if (args.help) {
+        _ = std.fs.File.stdout().write(HELPRUN) catch {};
+        return;
     }
 
-    while (iter.next()) |arg| {
-        const flag = std.mem.sliceTo(arg, 0);
-        switch (args.command) {
-            .help => {},
-            .run => {
-                if (std.mem.eql(u8, flag, "-f") or std.mem.eql(u8, flag, "--file")) args.file = iter.next() orelse {
-                    main_log.err("No file specified\n", .{});
-                    args.help = true;
-                    return args;
-                } else {
-                    args.help = true;
-                    main_log.err("Unknown argument {s}", .{flag});
-                }
-            },
-        }
-    }
-    return args;
-}
-
-pub fn main() !void {
-    const args = parse();
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer {
         if (debug_allocator.detectLeaks()) {
             std.debug.print("LEAKED MEMORY\n", .{});
         }
     }
-
-    if (args.command == .help) {
-        _ = std.fs.File.stdout().write(HELP) catch {};
-        return;
-    }
-    if (args.command == .run and args.help) {
-        _ = std.fs.File.stdout().write(HELPRUN) catch {};
-        return;
-    }
     const alloc = debug_allocator.allocator();
     const file = args.file;
 
-    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8080);
     var runtime: Runtime = try .init(
         &alloc,
-        MAXCONNECTIONS,
-        MAXEVENTS,
-        MAXMEMORY,
-        MAXREAD,
-        MAXWRITE,
+        args.connections,
+        args.io,
+        args.memory,
+        args.read,
+        args.write,
     );
     defer runtime.deinit();
 
@@ -147,7 +100,7 @@ pub fn main() !void {
     //TODO: make signalfd()
     //add read event
 
-    try runtime.serve(addr, MAXCONNECTIONS);
+    try runtime.serve(args.addr, args.connections);
     while (!SHUTDOWN) {
         //Flush io and try to handle immediately
         var event_queue = try runtime.io.flush(1);
@@ -156,5 +109,17 @@ pub fn main() !void {
             //TODO: handle state
             _ = future.wake(&runtime);
         }
+    }
+}
+inline fn help() !void {
+    _ = std.fs.File.stdout().write(HELP) catch {};
+    return;
+}
+
+pub fn main() !void {
+    const args = parser.parse();
+    switch (args.command) {
+        .help => help(),
+        .run => run(args),
     }
 }
