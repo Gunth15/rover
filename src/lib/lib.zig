@@ -6,6 +6,7 @@ pub const Lua = @import("lua/Lua.zig");
 pub const Queue = @import("util/queue.zig").Queue;
 pub const Reader = @import("util/Reader.zig");
 pub const Writer = @import("util/Writer.zig");
+pub const Router = @import("Router.zig");
 test {
     _ = @import("util/ring_cluster.zig");
     _ = @import("io/io.zig");
@@ -13,4 +14,5 @@ test {
     _ = @import("lua/Lua.zig");
     _ = @import("util/Reader.zig");
     _ = @import("util/Writer.zig");
+    _ = @import("Router.zig");
 }
