@@ -28,6 +28,9 @@ function rover.routes(plug)
 	--NOTE: rover.router.(get,post,put,path,,delete)
 	--NOTE: special router.resources to create a route that has everything you really need for most MVC apps.
 	return {
+
+		--- Have alternative rover.{get,post,put,patch} syntax
+		--- rover.get("/hello", contorller.hello.get),
 		--Most specific first
 		{ "/hello", GET = controllers.hello.get },
 		{ "/world", GET = controllers.world.get },

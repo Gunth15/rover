@@ -1,10 +1,9 @@
 function rover.routes()
 	return {
-		["/"] = { GET = Hello },
+		{ "/", { GET = Hello } },
 	}
 end
 
 function Hello(_)
-	return "<h1>Welcome</h1>\n"
-	-- conn:send_bytes("<h1>Welcome</h1>")
+	return conn:send_bytes("<h1>Welcome</h1>")
 end
