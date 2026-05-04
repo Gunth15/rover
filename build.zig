@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_module,
     });
 
-    //libpco
+    //libpico
     const pico_lib = b.addLibrary(.{
         .name = "pico",
         .linkage = .static,
@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
 
     lib.addIncludePath(b.path("src/lib/httpparser"));
     lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
+    b.installArtifact(lib);
 
     //exe
     const exe_module = b.createModule(.{
