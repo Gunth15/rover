@@ -13,8 +13,22 @@ pub const RegistrationError = error{
     WildCardChildNotAllowed,
     CatchAllIsNotTerminal,
     CatchAllConflict,
+    InvalidMethod,
 } || Allocator.Error;
 
+const Method = enum {
+    GET,
+    POST,
+    PUT,
+    PATCH,
+    DELETE,
+    fn from(str: []const u8) ?Method {
+        return std.meta.stringToEnum(Method, str);
+    }
+    fn to(m: Method) []const u8 {
+        return @tagName(m);
+    }
+};
 const Path = union(enum) {
     //root
     root: []const u8,
@@ -23,7 +37,7 @@ const Path = union(enum) {
     //:name, named_param
     named: []const u8,
     static: []const u8,
-    inline fn slice(p: Path) []const u8 {
+    pub inline fn slice(p: Path) []const u8 {
         return switch (p) {
             .root => |s| s,
             .catch_all => |s| s,
@@ -47,11 +61,11 @@ const Path = union(enum) {
             .static => |s| .{ .static = s[i..] },
         };
     }
-    inline fn len(p: Path) usize {
+    pub inline fn len(p: Path) usize {
         return p.slice().len;
     }
 };
-fn Node(T: type) type {
+pub fn Node(T: type) type {
     return struct {
         const Self = @This();
         path: Path,
@@ -61,7 +75,7 @@ fn Node(T: type) type {
         indices: std.ArrayList(u8) = .empty,
         wild_child: bool = false,
         children: std.ArrayList(*Self) = .empty,
-        handles: std.StringArrayHashMap(T),
+        handles: std.AutoArrayHashMap(Method, T),
         //get next child
         fn next(n: *Self, path: []const u8) ?*Self {
             const cidx = path[0];
@@ -177,7 +191,8 @@ fn Node(T: type) type {
             unreachable;
         }
         inline fn getHandle(n: *Self, method: []const u8) SearchError!T {
-            return n.handles.get(method) orelse SearchError.InvalidMethod;
+            const m = Method.from(method) orelse return SearchError.InvalidMethod;
+            return n.handles.get(m) orelse SearchError.InvalidMethod;
         }
         //returns new position
         fn updatePrio(n: *Self, pos: usize) usize {
@@ -252,6 +267,7 @@ pub fn Router(T: type) type {
         arena: std.heap.ArenaAllocator,
 
         const Self = @This();
+        pub const RNode = Node(T);
         pub fn init(alloc: Allocator, redirect_trailing_slash: bool, invalid_method_handler: ?T, not_found_handler: ?T) Allocator.Error!Self {
             var arena = std.heap.ArenaAllocator.init(alloc);
             const nalloc = arena.allocator();
@@ -279,7 +295,10 @@ pub fn Router(T: type) type {
             var n: *Node(T) = &r.root;
             walk: while (true) {
                 const i = std.mem.indexOfDiff(u8, path, n.path.slice()) orelse {
-                    return if (n.handles.contains(method)) RegistrationError.AlreadyExist else try n.handles.put(method, handle);
+                    const m = Method.from(method) orelse return RegistrationError.InvalidMethod;
+                    return if (n.handles.contains(m)) RegistrationError.AlreadyExist else {
+                        try n.handles.put(m, handle);
+                    };
                 };
                 if (i < n.path.len()) {
                     const child = try alloc.create(Node(T));
@@ -319,7 +338,8 @@ pub fn Router(T: type) type {
 
                     n = n.next(path) orelse {
                         const child = try n.addChild(alloc, path);
-                        try child.handles.put(method, handle);
+                        const m = Method.from(method) orelse return RegistrationError.InvalidMethod;
+                        try child.handles.put(m, handle);
                         return;
                     };
                     continue :walk;
@@ -353,7 +373,8 @@ pub fn Router(T: type) type {
 
                 if (full_path.len - prefix.items.len <= 0) {
                     if (std.mem.eql(u8, full_path, prefix.items)) {
-                        return n.handles.get(method) orelse if (r.invalid_method_handler) |handle| handle else SearchError.InvalidMethod;
+                        const m = Method.from(method) orelse return SearchError.InvalidMethod;
+                        return n.handles.get(m) orelse if (r.invalid_method_handler) |handle| handle else SearchError.InvalidMethod;
                     } else {
                         //prefix is longer, no node found
                         return if (r.not_found_handler) |handle| handle else SearchError.DoesNotExist;

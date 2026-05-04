@@ -8,11 +8,9 @@
 --TODO: add logger
 local plugins = rover.plugins
 local controllers = require("controllers")
-local rover = require("rover/rover")
 function rover.load()
 	print("moon rover started at", tostring(os.time()))
 	--TODO: maybe make global state update all vm's somehow(shared dict)
-	return { db = db }
 end
 function rover.plugs()
 	--TODO: add content type blockers
@@ -35,10 +33,8 @@ function rover.routes(plug)
 		{ "/hello", GET = controllers.hello.get },
 		{ "/world", GET = controllers.world.get },
 		{ "/:name", GET = controllers.name.get },
-		{ "/api", {
-			{ "/hello", GET = controllers.json.get },
-			{ "/nil", GET = controllers.nothing.get },
-		} },
+		{ "/api/hello", GET = controllers.json.get },
+		{ "/api//nil", GET = controllers.nothing.get },
 	}
 end
 

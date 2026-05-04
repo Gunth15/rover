@@ -1,6 +1,11 @@
 function rover.routes()
 	return {
-		{ "/", { GET = Hello } },
+		{ "/", GET = Hello },
+		{ "/", POST = Hello },
+		{ "/", PUT = Hello },
+		{ "/", PATCH = Hello },
+		{ "/", DELETE = Hello },
+		{ "/girl/:id", DELETE = Hello },
 	}
 end
 

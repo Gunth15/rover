@@ -180,6 +180,7 @@ pub const TypeError = error{
     ExpectedPointer,
 };
 pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
+    if (T == Function) return c.lua_tocfunction(l.state, @intCast(index));
     switch (@typeInfo(T)) {
         .@"struct" => if (std.meta.hasMethod(T, "luaTo")) T.luaTo(l.state) else return try l.structFromTable(T),
         .int,
@@ -358,6 +359,10 @@ pub fn resumeT(l: *LuaState, from: ?*LuaState, nargs: usize, nresults: *usize) C
         else => unreachable,
     };
 }
+//get absolute index of value
+pub fn getAbs(l: *LuaState, index: isize) isize {
+    return @intCast(c.lua_absindex(l.state, @intCast(index)));
+}
 ///equivalent to t[k] = v if k and v are on top of the stack and t is the index of the table
 pub fn setTable(l: *LuaState, index: isize) void {
     return c.lua_settable(l.state, @as(c_int, index));
@@ -367,9 +372,9 @@ pub fn getMetaTable(l: *LuaState, index: usize) error{NotPushed}!void {
 }
 ///t[n] where to is the table of the given index, the value pushed on top of the stack
 pub fn getI(l: *LuaState, index: isize, n: isize) LuaType {
-    return @enumFromInt(c.lua_geti(l.state, @as(c_int, index), @as(c.lua_Integer, n)));
+    return @enumFromInt(c.lua_geti(l.state, @intCast(index), @as(c.lua_Integer, n)));
 }
-///t[i]=v where v is on top of the stack
+///t[i]=v where v is pushed on top of the stack
 pub fn setI(l: *LuaState, index: isize, i: isize) void {
     c.lua_seti(l.state, @as(c_int, index), @as(c_longlong, i));
 }

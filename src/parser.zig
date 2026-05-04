@@ -2,7 +2,7 @@ const std = @import("std");
 const parser_log = @import("std").log.scoped(.parser);
 
 pub const Args = struct {
-    command: enum { run, help } = .help,
+    command: enum { run, help, routes } = .help,
     file: [:0]const u8 = "main.lua",
     help: bool = false,
     connections: usize = 500,
@@ -17,7 +17,13 @@ pub fn parse() Args {
     var iter = std.process.args();
     _ = iter.next();
     const command = iter.next() orelse return args;
-    if (std.mem.eql(u8, "help", command)) args.command = .help else if (std.mem.eql(u8, "run", command)) args.command = .run else {
+    if (std.mem.eql(u8, "help", command)) {
+        args.command = .help;
+    } else if (std.mem.eql(u8, "run", command)) {
+        args.command = .run;
+    } else if (std.mem.eql(u8, "routes", command)) {
+        args.command = .routes;
+    } else {
         parser_log.err("Unknown command: {s}\n", .{command});
         return args;
     }
@@ -48,6 +54,11 @@ pub fn parse() Args {
                     const addr = iter.next() orelse return parseErr(args, "No address provided\n", .{});
                     args.addr = std.net.Address.parseIpAndPort(addr) catch return parseErr(args, "{s} is not a valid address\n", .{addr});
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
+            },
+            .routes => {
+                if (isarg(flag, "-f", "--file")) args.file = iter.next() orelse {
+                    return parseErr(args, "No file specified\n", .{});
+                };
             },
         }
     }

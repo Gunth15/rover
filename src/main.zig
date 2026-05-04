@@ -3,6 +3,8 @@ const lib = @import("lib/lib.zig");
 const Lua = @import("lib/lib.zig").Lua;
 const Future = @import("Future.zig");
 const Runtime = @import("Runtime.zig");
+const route = lib.Router;
+const Router = route.Router(Lua.Function);
 const parser = @import("parser.zig");
 const main_log = @import("std").log.scoped(.start_up);
 
@@ -17,6 +19,7 @@ const HELP =
     \\Commands:
     \\  run                 Runs a Lua program(defaults to main.lua)
     \\  help                Show all commands
+    \\  routes              Displays all routes
 ;
 const HELPRUN =
     \\Rover 0.0.1
@@ -36,6 +39,16 @@ const HELPRUN =
     \\  -a, --addr <addr:port>    Address to bind (e.g. 127.0.0.1:8080)
     \\  -h, --help                Show this help message
     \\
+;
+const HELPROUTES =
+    \\Rover 0.0.1
+    \\Cameron W.
+    \\
+    \\Usage:
+    \\  rover routes [options]
+    \\
+    \\Options:
+    \\  -f, --file <path>         Lua script to execute
 ;
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
@@ -67,30 +80,11 @@ inline fn run(args: parser.Args) !void {
     );
     defer runtime.deinit();
 
-    //load main file(allow user to define path to file)
-    runtime.lua.newTable();
-    runtime.lua.setGlobal("rover");
-    runtime.lua.loadFile(args.file) catch {
-        const err = try runtime.lua.to(Lua.String, -1);
-        fatal("Error loading file: {s}", .{err}, 1);
-    };
-    runtime.lua.pcall(0, 0) catch {
-        const err = try runtime.lua.to(Lua.String, -1);
-        fatal("Error during initialization: {s}", .{err}, 1);
-    };
-
-    //rover.routing_table = rover.routes()
-    if (runtime.lua.getGlobal("rover") != .table) @panic("rover could not be found");
-    if (runtime.lua.getField(-1, "routes") != .func) @panic("rover.routes is not a function");
-    runtime.lua.pcall(0, 1) catch {
-        const err = try runtime.lua.to(Lua.String, -1);
-        fatal("Unrecoverable state reached: {s}\n", .{err}, 1);
-    };
-    runtime.lua.setField(-2, "routing_table");
-    runtime.lua.pop(1);
-
-    //run rover.load function
-    //save global to be shared between threads
+    runtime.lua.openLibs();
+    runtime.loadMain(args.file);
+    //TODO: get user defined error handler
+    runtime.buildRouter(alloc);
+    runtime.runLoadFunc();
 
     //TODO: make signalfd()
     //add read event
@@ -111,10 +105,71 @@ inline fn help() !void {
     return;
 }
 
+inline fn routes(args: parser.Args) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const stdout = std.fs.File.stdout();
+    var writer = stdout.writer(try alloc.alloc(u8, 4096));
+    defer writer.end() catch {};
+
+    if (args.help) {
+        _ = writer.interface.write(HELPROUTES) catch {};
+        return;
+    }
+
+    var runtime: Runtime = undefined;
+    runtime.lua = Lua.init(.{}) catch fatal("Fatal: Could not initialize lua", .{}, 1);
+    runtime.loadMain(args.file);
+    runtime.lua.openLibs();
+    runtime.buildRouter(alloc);
+
+    try writer.interface.print("\n{s:<10} {s}\n", .{ "METHOD", "PATH" });
+    try writer.interface.print("{s}\n", .{"─" ** 50});
+
+    print(&runtime.router.root, alloc, &writer.interface);
+}
+fn print(node: *Router.RNode, alloc: std.mem.Allocator, writer: *std.io.Writer) void {
+    var builder: std.ArrayList(u8) = .empty;
+    defer builder.deinit(alloc);
+
+    printNode(node, &builder, alloc, writer);
+}
+fn printNode(node: *Router.RNode, builder: *std.ArrayList(u8), alloc: std.mem.Allocator, writer: *std.io.Writer) void {
+    builder.appendSlice(alloc, node.path.slice()) catch {};
+    defer builder.items.len -= node.path.len();
+
+    var it = node.handles.iterator();
+    while (it.next()) |entry| {
+        const method = entry.key_ptr.*;
+        const method_col = switch (method) {
+            .GET => "\x1b[32m",
+            .POST => "\x1b[33m",
+            .PUT => "\x1b[34m",
+            .PATCH => "\x1b[36m",
+            .DELETE => "\x1b[31m",
+        };
+        const path_col = switch (node.path) {
+            .named => "\x1b[33m",
+            .catch_all => "\x1b[35m",
+            else => "",
+        };
+        writer.print("{s}{s:<10}\x1b[0m {s}{s}\x1b[0m\n", .{
+            method_col, @tagName(method),
+            path_col,   builder.items,
+        }) catch unreachable;
+    }
+    for (node.children.items) |child| {
+        printNode(child, builder, alloc, writer);
+    }
+}
+
 pub fn main() !void {
     const args = parser.parse();
     switch (args.command) {
         .help => return help(),
         .run => return run(args),
+        .routes => return routes(args),
     }
 }
