@@ -1,11 +1,7 @@
 function rover.routes()
+	--TODO:: Fix wildcards
 	return {
 		{ "/", GET = Hello },
-		{ "/", POST = Hello },
-		{ "/", PUT = Hello },
-		{ "/", PATCH = Hello },
-		{ "/", DELETE = Hello },
-		{ "/girl/:id", DELETE = Hello },
 	}
 end
 
