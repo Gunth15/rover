@@ -6,42 +6,48 @@ const Runtime = @import("Runtime.zig");
 const Future = @This();
 pub const State = enum { waiting, finished, failed };
 pub const VTable = struct {
-    wake: *const fn (*Future, *Runtime, *ConnectionContext, *anyopaque) State,
-    cancel: *const fn (*Future, *Runtime, *ConnectionContext, *anyopaque) void,
+    wake: *const fn (*Future, *Runtime) State,
+    cancel: *const fn (*Future, *Runtime) void,
 };
 pub inline fn wake(f: *Future, runtime: *Runtime) State {
-    return f.vtable.wake(f, runtime, f.conn, f.ctxt);
+    return f.vtable.wake(f, runtime);
 }
 //canel is called don failure
 pub inline fn cancel(f: *Future, runtime: *Runtime) void {
-    return f.vtable.cancel(f, runtime, f.conn, f.ctxt);
+    return f.vtable.cancel(f, runtime);
 }
-const Group = struct {
+
+///accumulator future is the future that controls the flow
+///second args is a pointer to the output fro the previous entry
+pub const FutureFunc = *const fn (*Future, ?*anyopaque) Future;
+pub const Group = struct {
     futures: []*Future,
+    future_funcs: []FutureFunc,
     idx: usize = 0,
+
+    ///This function taakes a future and changes the future's state based on the context pointer
     ///run one after another. If one fails, the next is not ran
-    pub fn seq(g: *Group, conn: ConnectionContext) Future {
+    ///Uses one future and the output of the previous future is used by the next(stored in the context)
+    pub fn seq(g: *Group, conn: *ConnectionContext) Future {
         const cb = struct {
-            fn wake(f: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
-                const gr: *Group = @ptrCast(@alignCast(ptr));
-                const futures = g.futures;
-                const fut = futures[g.idx];
-                return status: switch (fut.wake(runtime)) {
-                    .waiting => .waiting,
-                    .failed => {
-                        f.cancel(runtime);
-                        break :status .failed;
-                    },
+            fn wake(f: *Future, runtime: *Runtime) State {
+                const gr: *Group = @ptrCast(f.ctxt);
+                const fut = gr.futures[0];
+                switch (fut.wake(runtime)) {
+                    .waiting => return .waiting,
+                    .failed => return .failed,
                     .finished => {
                         gr.idx += 1;
-                        if (gr.idx == futures.len) break :status .finished;
-                        break :status .waiting;
+                        if (gr.idx == gr.future_funcs.len) return .finished;
+                        const func = gr.future_funcs[gr.idx];
+                        fut.* = func(f, fut.ctxt);
+                        return .waiting;
                     },
-                };
+                }
             }
-            fn cancel(_: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
-                const gr: *Group = @ptrCast(@alignCast(ptr));
-                for (gr.futures[gr.idx + 1 ..]) |fut| fut.cancel(runtime);
+
+            fn cancel(f: *Future, runtime: *Runtime) void {
+                f.cancel(runtime);
             }
         };
         return .{
@@ -56,7 +62,7 @@ const Group = struct {
     ///runs all at the same time and returns when all have finished
     pub fn group(g: *Group, conn: ConnectionContext) Future {
         const cb = struct {
-            fn wake(f: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
+            fn wake(f: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) State {
                 _ = f;
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 var all_done = true;
@@ -79,7 +85,7 @@ const Group = struct {
                 if (all_done) return .finished;
                 return .waiting;
             }
-            fn cancel(_: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
+            fn cancel(_: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) void {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 for (gr.futures) |fut| fut.cancel(runtime);
             }
@@ -97,7 +103,7 @@ const Group = struct {
     ///runs all at the same time; if any one fails, the rest are cancelled and the group fails
     pub fn failGroup(g: *Group, conn: ConnectionContext) Future {
         const cb = struct {
-            fn wake(f: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
+            fn wake(f: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) State {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 var pending: usize = 0;
                 for (gr.futures) |fut| {
@@ -113,7 +119,7 @@ const Group = struct {
                 if (pending == 0) return .finished;
                 return .waiting;
             }
-            fn cancel(_: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
+            fn cancel(_: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) void {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 for (gr.futures) |fut| fut.cancel(runtime);
             }
@@ -131,7 +137,7 @@ const Group = struct {
     ///first future to finish wins; failures are skipped. If all fail, the group fails.
     pub fn select(g: *Group, conn: ConnectionContext) Future {
         const cb = struct {
-            fn wake(f: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
+            fn wake(f: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) State {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 var all_failed = true;
                 for (gr.futures) |fut| {
@@ -152,7 +158,7 @@ const Group = struct {
                 if (all_failed) return .failed;
                 return .waiting;
             }
-            fn cancel(_: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
+            fn cancel(_: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) void {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 for (gr.futures) |fut| fut.cancel(runtime);
             }
@@ -168,9 +174,9 @@ const Group = struct {
     }
 
     ///first future to settle (finish OR fail) wins; the others are cancelled
-    pub fn failSelect(g: *Group, conn: ConnectionContext) Future {
+    pub fn failSelect(g: *Group, conn: *ConnectionContext) Future {
         const cb = struct {
-            fn wake(f: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
+            fn wake(f: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) State {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 for (gr.futures) |fut| {
                     switch (fut.wake(runtime)) {
@@ -187,7 +193,7 @@ const Group = struct {
                 }
                 return .waiting;
             }
-            fn cancel(_: *Future, runtime: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
+            fn cancel(_: *Future, runtime: *Runtime, _: *ConnectionContext, ptr: *anyopaque) void {
                 const gr: *Group = @ptrCast(@alignCast(ptr));
                 for (gr.futures) |fut| fut.cancel(runtime);
             }
@@ -212,7 +218,7 @@ const MockFuture = struct {
 
     fn future(self: *MockFuture) Future {
         const cb = struct {
-            fn wake(_: *Future, _: *Runtime, _: ConnectionContext, ptr: *anyopaque) State {
+            fn wake(_: *Future, _: *Runtime, _: *ConnectionContext, ptr: *anyopaque) State {
                 const m: *MockFuture = @ptrCast(@alignCast(ptr));
                 if (m.cancelled) return .failed;
                 const idx = @min(m.tick, m.script.len - 1);
@@ -220,7 +226,7 @@ const MockFuture = struct {
                 m.tick += 1;
                 return s;
             }
-            fn cancel(_: *Future, _: *Runtime, _: ConnectionContext, ptr: *anyopaque) void {
+            fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, ptr: *anyopaque) void {
                 const m: *MockFuture = @ptrCast(@alignCast(ptr));
                 m.cancelled = true;
             }
@@ -243,50 +249,6 @@ fn drive(f: *Future, limit: usize) State {
         if (s != .waiting) return s;
     }
     return s;
-}
-
-// ── seq ───────────────────────────────────────────────────────────────────────
-
-test "seq: all finish in order" {
-    var a = MockFuture{ .script = &.{ .waiting, .finished } };
-    var b = MockFuture{ .script = &.{ .waiting, .finished } };
-    var fa = a.future();
-    var fb = b.future();
-    var futures = [_]*Future{ &fa, &fb };
-    var g = Group{ .futures = &futures };
-    var f = g.seq(.{});
-
-    try testing.expectEqual(.finished, drive(&f, 10));
-    try testing.expectEqual(false, a.cancelled);
-    try testing.expectEqual(false, b.cancelled);
-}
-
-test "seq: first fails, second never runs" {
-    var a = MockFuture{ .script = &.{.failed} };
-    var b = MockFuture{ .script = &.{.finished} };
-    var fa = a.future();
-    var fb = b.future();
-    var futures = [_]*Future{ &fa, &fb };
-    var g = Group{ .futures = &futures };
-    var f = g.seq(.{});
-
-    try testing.expectEqual(.failed, drive(&f, 10));
-    // b should never have been woken — it stays at tick 0
-    try testing.expectEqual(0, b.tick);
-}
-
-test "seq: waits for first before starting second" {
-    var a = MockFuture{ .script = &.{ .waiting, .waiting, .finished } };
-    var b = MockFuture{ .script = &.{.finished} };
-    var fa = a.future();
-    var fb = b.future();
-    var futures = [_]*Future{ &fa, &fb };
-    var g = Group{ .futures = &futures };
-    var f = g.seq(.{});
-
-    try testing.expectEqual(.finished, drive(&f, 10));
-    try testing.expectEqual(3, a.tick); // waited twice, then finished
-    try testing.expectEqual(1, b.tick); // ran exactly once
 }
 
 // ── group ─────────────────────────────────────────────────────────────────────

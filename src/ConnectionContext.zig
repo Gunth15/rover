@@ -126,17 +126,18 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
 ///rearms context to accept new connection handle and address
 pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, server_handle: Io.Handle) void {
     const cb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+        fn wake(f: *Future, r: *Runtime) Future.State {
             std.debug.print("New connection started\n", .{});
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             std.debug.assert(ev.status == .complete);
             std.debug.assert(ev.status.complete == .accept);
+            const conn = f.conn;
 
             conn.handle = ev.status.complete.accept catch return .failed;
             conn.readAndStart(&r.io, f, ev);
             return .waiting;
         }
-        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
+        fn cancel(_: *Future, _: *Runtime) void {
             return;
         }
     };
@@ -155,9 +156,10 @@ pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, ser
 ///Starts handling request if it receieves a full HTTP Request
 fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const Readcb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+        fn wake(f: *Future, r: *Runtime) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             std.debug.assert(ev.status.complete == .read);
+            const conn = f.conn;
 
             const read_bytes = ev.status.complete.read catch return .failed;
 
@@ -209,9 +211,9 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             conn.write(&r.io, f, ev);
             return .waiting;
         }
-        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) void {
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
-            conn.close(&r.io, f, ev);
+        fn cancel(f: *Future, r: *Runtime) void {
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            f.conn.close(&r.io, f, ev);
         }
     };
     fut.* = .{
@@ -227,10 +229,11 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 ///future and event must outlive function
 fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
+        fn wake(f: *Future, r: *Runtime) Future.State {
             std.debug.print("Writing new connection\n", .{});
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             std.debug.assert(ev.status.complete == .writev);
+            const conn = f.conn;
             const written = ev.status.complete.writev catch return .failed;
             const writer = &conn.writer;
             writer.consume(written);
@@ -242,9 +245,9 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
             conn.close(&r.io, f, ev);
             return .waiting;
         }
-        fn cancel(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) void {
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
-            conn.close(&r.io, f, ev);
+        fn cancel(f: *Future, r: *Runtime) void {
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            f.conn.close(&r.io, f, ev);
         }
     };
     fut.* = .{
@@ -261,14 +264,15 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
 ///future and event must outlive function
 fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
-        fn wake(f: *Future, r: *Runtime, conn: *ConnectionContext, ptr: *anyopaque) Future.State {
-            const ev: *Io.Event = @ptrCast(@alignCast(ptr));
+        fn wake(f: *Future, r: *Runtime) Future.State {
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            const conn = f.conn;
             std.debug.print("Connection closed", .{});
             conn.reset() catch @panic("Failed to reset Connection");
             conn.rearm(&r.io, f, ev, r.server.stream.handle);
             return .waiting;
         }
-        fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, _: *anyopaque) void {
+        fn cancel(_: *Future, _: *Runtime) void {
             return;
         }
     };
