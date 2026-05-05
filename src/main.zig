@@ -4,7 +4,7 @@ const Lua = @import("lib/lib.zig").Lua;
 const Future = @import("Future.zig");
 const Runtime = @import("Runtime.zig");
 const route = lib.Router;
-const Router = route.Router(Lua.Function);
+const Router = route.Router(c_int);
 const parser = @import("parser.zig");
 const main_log = @import("std").log.scoped(.start_up);
 
@@ -49,6 +49,8 @@ const HELPROUTES =
     \\
     \\Options:
     \\  -f, --file <path>         Lua script to execute
+    \\  -h, --help                Show this help message
+    \\
 ;
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
@@ -125,7 +127,7 @@ inline fn routes(args: parser.Args) !void {
     runtime.lua.openLibs();
     runtime.buildRouter(alloc);
 
-    try writer.interface.print("\n{s:<10} {s}\n", .{ "METHOD", "PATH" });
+    try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
     try writer.interface.print("{s}\n", .{"─" ** 50});
 
     print(&runtime.router.root, alloc, &writer.interface);

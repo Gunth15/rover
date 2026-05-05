@@ -140,6 +140,7 @@ pub fn call(l: *LuaState, func: [:0]const u8, args: anytype, ResultType: type) C
 ///pointers are passed as light userdata in lua
 pub fn push(l: *LuaState, arg: anytype) void {
     const ArgType = @TypeOf(arg);
+    if (@TypeOf(arg) == Function) return c.lua_pushcfunction(l.state, arg);
     switch (@typeInfo(ArgType)) {
         .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else structToTable(arg),
         .int, .comptime_int => c.lua_pushinteger(l.state, arg),
@@ -414,6 +415,9 @@ pub fn checkStack(l: *LuaState, extra: usize) bool {
 }
 pub fn ref(l: *LuaState) c_int {
     return c.luaL_ref(l.state, c.LUA_REGISTRYINDEX);
+}
+pub fn getRef(l: *LuaState, reference: c_int) LuaType {
+    return @enumFromInt(c.lua_rawgeti(l.state, c.LUA_REGISTRYINDEX, reference));
 }
 pub fn unref(l: *LuaState, reference: c_int) void {
     return c.luaL_unref(l.state, c.LUA_REGISTRYINDEX, reference);

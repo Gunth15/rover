@@ -53,12 +53,16 @@ pub fn parse() Args {
                 } else if (isarg(flag, "-a", "--addr")) {
                     const addr = iter.next() orelse return parseErr(args, "No address provided\n", .{});
                     args.addr = std.net.Address.parseIpAndPort(addr) catch return parseErr(args, "{s} is not a valid address\n", .{addr});
+                } else if (isarg(flag, "-h", "--help")) {
+                    args.help = true;
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
             },
             .routes => {
                 if (isarg(flag, "-f", "--file")) args.file = iter.next() orelse {
                     return parseErr(args, "No file specified\n", .{});
-                };
+                } else if (isarg(flag, "-h", "--help")) {
+                    args.help = true;
+                } else return parseErr(args, "Unknown argument {s}", .{flag});
             },
         }
     }

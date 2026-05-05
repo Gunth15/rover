@@ -19,6 +19,8 @@ const Lua = lib.Lua;
 const Parser = lib.HttpParser;
 const EventQueue = lib.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
+const Router = lib.Router.Router(c_int);
+const connection_log = std.log.scoped(.connection);
 
 const Thread = struct {
     ref: c_int,
@@ -31,16 +33,19 @@ const Thread = struct {
         const state = t.lthread.resumeT(null, 1, &nresults) catch @panic("Out of memory or some other runtime error, TODO: handle cases properly");
         std.debug.assert(state == .OK);
     }
-    fn startT(t: *Thread, conn: *ConnectionContext, req: HttpParser.Request) void {
+    fn startT(t: *Thread, conn: *ConnectionContext, router: *Router, req: HttpParser.Request) void {
         //send connection
         const thread: *Lua = &t.lthread;
 
-        std.debug.assert(thread.getGlobal("rover") == .table);
-        std.debug.assert(thread.getField(-1, "routing_table") == .table);
+        connection_log.info("Getting handler for path {s} with method {s}\n", .{ req.path, req.method });
 
-        std.debug.print("Getting handler for path {s} with method {s}\n", .{ req.path, req.method });
-        if (thread.getField(-1, req.path) != .table) @panic("Handler not found or is not a function TODO: handle gracefully");
-        if (thread.getField(-1, req.method) != .func) @panic("Handler not found or is not a function TODO: handle gracefully");
+        //TODO: decide wether to get assigns dynamically or add them all al at once
+        var assigns: std.StringArrayHashMap([]const u8) = .init(conn.slab.allocator());
+        defer assigns.deinit();
+
+        const lfunc = router.search(&assigns, req.method, req.path) catch @panic("Router error");
+        std.debug.assert(thread.getRef(lfunc) == .func);
+        connection_log.info("Router found handler :{d}\n", .{lfunc});
 
         thread.newTable();
         thread.push(req.headers.get("Host"));
@@ -99,7 +104,7 @@ pub inline fn reset(conn: *ConnectionContext) !void {
     conn.req_bytes_read = 0;
     conn.total_bytes_read = 0;
 }
-pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !Thread {
+pub fn start(conn: *ConnectionContext, lua: *Lua, router: *Router, req: HttpParser.Request) !Thread {
     const lthread = try lua.newThread();
     const ref = lua.ref();
     var thread: Thread = .{
@@ -108,7 +113,7 @@ pub fn start(conn: *ConnectionContext, lua: *Lua, req: HttpParser.Request) !Thre
         .lthread = lthread,
     };
 
-    thread.startT(conn, req);
+    thread.startT(conn, router, req);
     return thread;
 }
 pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
@@ -205,7 +210,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             //SEND ANOTHER READ
 
             std.debug.print("Starting hander\n", .{});
-            var thread = conn.start(&r.lua, req) catch |e| @panic(@typeName(@TypeOf(e)));
+            var thread = conn.start(&r.lua, &r.router, req) catch |e| @panic(@typeName(@TypeOf(e)));
             conn.stop(&r.lua, &thread);
             std.debug.print("Hander stopped\n", .{});
             conn.write(&r.io, f, ev);

@@ -18,7 +18,7 @@ const route = lib.Router;
 const Parser = lib.HttpParser;
 const Io = lib.Io;
 const Lua = lib.Lua;
-const Router = route.Router(Lua.Function);
+const Router = route.Router(c_int);
 const ConnectionContext = @import("ConnectionContext.zig");
 const Future = @import("Future.zig");
 const ConnectionPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
@@ -64,7 +64,7 @@ pub fn deinit(r: *Runtime) void {
 
 pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
     const alloc = r.slab.allocator();
-    r.server = try addr.listen(.{});
+    r.server = try addr.listen(.{ .reuse_address = true });
     for (0..connections) |_| {
         const conn: *ConnectionContext = try r.connection_pool.create();
         const event = try r.event_pool.create();
@@ -86,7 +86,7 @@ pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
     lua.setGlobal("rover");
     lua.loadFile(file) catch {
         const err = lua.to(Lua.String, -1) catch unreachable;
-        fatal("Error loading file: {s}", .{err}, 1);
+        fatal("{s}", .{err}, 1);
     };
     lua.pcall(0, 0) catch {
         const err = lua.to(Lua.String, -1) catch unreachable;
@@ -130,8 +130,8 @@ pub fn buildRouter(r: *Runtime, alloc: std.mem.Allocator) void {
         for (accepted_methods) |method| {
             switch (lua.getField(route_idx, method)) {
                 .func => {
-                    const function = lua.to(Lua.Function, -1) catch unreachable;
-                    r.router.regiser(method, path, function) catch |e| {
+                    const ref = lua.ref();
+                    r.router.regiser(method, path, ref) catch |e| {
                         switch (e) {
                             route.RegistrationError.CatchAllIsNotTerminal => fatal("Improper catch-all route {s}, catch-all must be at preceeded by \'\\\'", .{path}, 1),
                             route.RegistrationError.AlreadyExist => fatal("{s} already exist", .{path}, 1),
@@ -158,12 +158,18 @@ pub fn buildRouter(r: *Runtime, alloc: std.mem.Allocator) void {
 pub fn runLoadFunc(r: *Runtime) void {
     var lua = r.lua;
 
-    std.debug.assert(lua.getGlobal("rover") != .table);
-    if (lua.getField(-1, "load") != .func) fatal("rover.load was not a function", .{}, 1);
-    lua.pcall(0, 0) catch {
-        const err = lua.to(Lua.String, -1) catch unreachable;
-        fatal("Unexpected error from rover.load: {s}", .{err}, 1);
-    };
+    if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
+    switch (lua.getField(-1, "load")) {
+        .func => {
+            lua.pcall(0, 0) catch {
+                const err = lua.to(Lua.String, -1) catch unreachable;
+                fatal("Unexpected error from rover.load: {s}", .{err}, 1);
+            };
+        },
+        //Dore not exist(this is ok)
+        .nil => {},
+        else => fatal("rover.load was not a function", .{}, 1),
+    }
 }
 
 pub fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, ctxt: *anyopaque) void {
