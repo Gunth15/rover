@@ -1,8 +1,10 @@
 conn: *ConnectionContext,
 ctxt: *anyopaque,
 vtable: *const VTable,
-const ConnectionContext = @import("ConnectionContext.zig");
-const Runtime = @import("Runtime.zig");
+thread_id: u32 = 0,
+const lib = @import("lib.zig");
+const ConnectionContext = lib.Connnection;
+const Runtime = lib.Runtime;
 const Future = @This();
 pub const State = enum { waiting, finished, failed };
 pub const VTable = struct {

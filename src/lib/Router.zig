@@ -250,7 +250,10 @@ pub fn Node(T: type) type {
     };
 }
 
-pub fn Router(T: type) type {
+const RouterOptions = struct {
+    lua: bool = false,
+};
+pub fn Router(T: type, comptime opts: RouterOptions) type {
     return struct {
         root: Node(T),
         //if route can't be matched, but a path exist without the trailing slash exist
@@ -347,8 +350,18 @@ pub fn Router(T: type) type {
             }
             unreachable;
         }
-        //uses notfound handler if it one exist.
-        pub fn search(r: *Self, assigns: *std.StringArrayHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
+        ///Uses notfound handler if it one exist.
+        //If in Lua mode, pushes assigns table to top of lua stack
+        pub fn search(r: *Self, assigns: if (opts.lua) *Lua else *std.StringArrayHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
+            if (opts.lua) assigns.newTable();
+            const putfn = struct {
+                fn put(a: @TypeOf(assigns), edge: []const u8, path: []const u8) !void {
+                    if (opts.lua) {
+                        a.push(path);
+                        a.setField(-2, edge[1..]);
+                    } else try a.put(edge[1..], path);
+                }
+            };
             var path = full_path;
             const alloc = r.arena.allocator();
 
@@ -359,13 +372,13 @@ pub fn Router(T: type) type {
             while (true) {
                 switch (n.path) {
                     .catch_all => |edge| {
-                        try assigns.put(edge[1..], path);
+                        try putfn.put(assigns, edge[1..], path);
                         try prefix.appendSlice(alloc, path);
                     },
                     .named => |edge| {
                         var iter = std.mem.splitAny(u8, path, "/");
                         const value = iter.first();
-                        try assigns.put(edge[1..], value);
+                        try putfn.put(assigns, edge[1..], path);
                         try prefix.appendSlice(alloc, value);
                     },
                     .root, .static => |edge| try prefix.appendSlice(alloc, edge),
@@ -417,7 +430,7 @@ fn findWildcard(path: []const u8) RegistrationError!?struct { []const u8, usize 
 }
 
 test "register and find static route" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -432,7 +445,7 @@ test "register and find static route" {
 }
 
 test "invalid method" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -449,7 +462,7 @@ test "invalid method" {
 }
 
 test "path splitting works" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -465,7 +478,7 @@ test "path splitting works" {
 }
 
 test "named parameter extraction" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -481,7 +494,7 @@ test "named parameter extraction" {
 }
 
 test "catch all route" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -497,7 +510,7 @@ test "catch all route" {
 }
 
 test "wildcard conflict" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -511,7 +524,7 @@ test "wildcard conflict" {
 }
 
 test "catch all cannot have children" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -525,7 +538,7 @@ test "catch all cannot have children" {
 }
 
 test "not found" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
@@ -540,7 +553,7 @@ test "not found" {
 }
 
 test "trailing slash mismatch" {
-    const R = Router(usize);
+    const R = Router(usize, .{});
 
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();

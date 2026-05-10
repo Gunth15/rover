@@ -1,5 +1,6 @@
 addr: std.net.Address = undefined,
 handle: Io.Handle = undefined,
+req_threads: std.ArrayList(Thread),
 rvec: [2]Io.Vec = undefined,
 wvec: [2]Io.Vec = undefined,
 reader: lib.Reader,
@@ -10,28 +11,32 @@ req_bytes_read: usize = 0,
 total_bytes_read: usize = 0,
 
 const ConnectionContext = @This();
-const Runtime = @import("Runtime.zig");
 const std = @import("std");
-const lib = @import("lib/lib.zig");
-const Future = @import("Future.zig");
+const lib = @import("lib.zig");
+const Runtime = lib.Runtime;
+const Future = lib.Future;
 const Io = lib.Io;
 const Lua = lib.Lua;
 const Parser = lib.HttpParser;
 const EventQueue = lib.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
-const Router = lib.Router.Router(c_int);
+const Router = lib.Router.Router(c_int, .{ .lua = true });
 const connection_log = std.log.scoped(.connection);
 
 const Thread = struct {
     ref: c_int,
     lthread: Lua,
-    //if you run out of memory before finishing a request, try to complete toher request first
-    //if all of them require more memory than available, it's time to kill the conection
     arena: std.heap.ArenaAllocator,
     fn resumeT(t: *Thread) void {
         var nresults: usize = 0;
-        const state = t.lthread.resumeT(null, 1, &nresults) catch @panic("Out of memory or some other runtime error, TODO: handle cases properly");
-        std.debug.assert(state == .OK);
+        switch (t.lthread.resumeT(null, 1, &nresults) catch @panic("Out of memory or some other runtime error, TODO: handle cases properly")) {
+            .OK => {
+                //cleanup thread
+            },
+            .YIELDED => {
+                //assumes a future was sent somwhere
+            },
+        }
     }
     fn startT(t: *Thread, conn: *ConnectionContext, router: *Router, req: HttpParser.Request) void {
         //send connection
@@ -39,15 +44,14 @@ const Thread = struct {
 
         connection_log.info("Getting handler for path {s} with method {s}\n", .{ req.path, req.method });
 
-        //TODO: decide wether to get assigns dynamically or add them all al at once
-        var assigns: std.StringArrayHashMap([]const u8) = .init(conn.slab.allocator());
-        defer assigns.deinit();
+        //create connection table
+        thread.newTable();
 
-        const lfunc = router.search(&assigns, req.method, req.path) catch @panic("Router error");
+        const lfunc = router.search(thread, req.method, req.path) catch @panic("Router error");
+        thread.setField(-2, "assigns");
         std.debug.assert(thread.getRef(lfunc) == .func);
         connection_log.info("Router found handler :{d}\n", .{lfunc});
 
-        thread.newTable();
         thread.push(req.headers.get("Host"));
         thread.setField(-2, "host");
 
@@ -91,15 +95,16 @@ pub inline fn init(slab: std.mem.Allocator, mem_size: usize, reader_size: usize,
         .allocation_fail_count = 0,
     };
 }
-pub inline fn reset(conn: *ConnectionContext) !void {
+pub inline fn reset(conn: *ConnectionContext) void {
     const writer_size = conn.writer.buf.len;
     const reader_size = conn.reader.buf.len;
     conn.addr = undefined;
     conn.handle = undefined;
     conn.slab.reset();
     const alloc = conn.slab.allocator();
-    conn.reader = try .init(alloc, reader_size);
-    conn.writer = try .init(alloc, writer_size);
+    //shoud never fail
+    conn.reader = .init(alloc, reader_size) catch unreachable;
+    conn.writer = .init(alloc, writer_size) catch unreachable;
     conn.allocation_fail_count = 0;
     conn.req_bytes_read = 0;
     conn.total_bytes_read = 0;
@@ -132,17 +137,24 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
 pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, server_handle: Io.Handle) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime) Future.State {
-            std.debug.print("New connection started\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             std.debug.assert(ev.status == .complete);
             std.debug.assert(ev.status.complete == .accept);
+
             const conn = f.conn;
 
-            conn.handle = ev.status.complete.accept catch return .failed;
+            conn.handle = ev.status.complete.accept catch |e| {
+                connection_log.err("[fd: {d}]\tFailed to accept new connection:\t{any}\n", .{e});
+                return .failed;
+            };
+            connection_log.info("[fd: {d}]\tNew connection started\n", .{conn.handle});
             conn.readAndStart(&r.io, f, ev);
             return .waiting;
         }
-        fn cancel(_: *Future, _: *Runtime) void {
+        fn cancel(f: *Future, r: *Runtime) void {
+            const conn = f.conn;
+            const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            conn.rearm(&r.io, f, ev, r.server.stream.handle);
             return;
         }
     };
@@ -163,10 +175,14 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
     const Readcb = struct {
         fn wake(f: *Future, r: *Runtime) Future.State {
             const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            std.debug.assert(ev.status == .complete);
             std.debug.assert(ev.status.complete == .read);
             const conn = f.conn;
 
-            const read_bytes = ev.status.complete.read catch return .failed;
+            const read_bytes = ev.status.complete.read catch |e| {
+                connection_log.err("[fd: {d}]\tFailed to read connection: {any}\n", .{ conn.handle, e });
+                return .failed;
+            };
 
             //TODO: handle zero bytes read
             const reader = &conn.reader;
@@ -178,8 +194,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             var temp: [4096 * 4]u8 = undefined;
 
             const slice = reader.peek();
-            //OPTIMIZE: I hope to replace this with a stateful http parser to remove the need
-            //for a temporary buffer
+            //OPTIMIZE: I hope to replace this with a stateful http parser to remove the need for a temporary buffer
             const buf_size = slice.first.len + slice.second.len;
             @memcpy(temp[0..slice.first.len], slice.first);
             @memcpy(temp[slice.first.len..buf_size], slice.second);
@@ -187,16 +202,19 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 
             conn.total_bytes_read += read_bytes;
             conn.req_bytes_read += read_bytes;
-            std.debug.print("Reading connection:\n--------------------\n{s}\n--------------------\n", .{parsable});
+
+            connection_log.info("[fd: {d}]\tReading connection\n--------------------\n{s}\n--------------------\n", .{ conn.handle, parsable });
+            connection_log.info("[fd: {d}]\tBytes read so far: {d}", .{ conn.handle, conn.req_bytes_read });
             const req = Parser.parse(parsable, conn.slab.allocator(), 64, prev_bytes_read) catch |e| {
                 switch (e) {
                     error.PartialRequest => {
                         //TODO: if req_bytes_read == max_req_bytes or wrote != read, write log error and return 403, set read_bytes back to 0
+                        connection_log.info("[fd: {d}]\tHttp request partialy read, preping another read\n", .{conn.handle});
                         conn.readIo(&r.io, f, ev);
                         return .waiting;
                     },
                     else => {
-                        std.debug.print("Faled to read: {any}\n", .{e});
+                        connection_log.err("[fd: {d}]\tFailed to read connection: {any}\n", .{ conn.handle, e });
                         return .failed;
                     },
                 }
@@ -204,15 +222,15 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 
             reader.consumeHead(req.size);
             conn.req_bytes_read -= req.size;
-            std.debug.print("Total Bytes read: {d}\nRequest Size: {d}\n", .{ conn.total_bytes_read, req.size });
+            connection_log.info("[fd: {d}]\tTotal Bytes read: {d}\nRequest Size: {d}\n", .{ conn.handle, conn.total_bytes_read, req.size });
 
             //TODO: if connection is keep-alive, read again until timeout or close is sent by user
             //SEND ANOTHER READ
 
-            std.debug.print("Starting hander\n", .{});
+            connection_log.info("[fd: {d}]\tStarting new lua thread\n", .{conn.handle});
             var thread = conn.start(&r.lua, &r.router, req) catch |e| @panic(@typeName(@TypeOf(e)));
             conn.stop(&r.lua, &thread);
-            std.debug.print("Hander stopped\n", .{});
+            connection_log.info("[fd: {d}]\tShutting down lua thread\n", .{conn.handle});
             conn.write(&r.io, f, ev);
             return .waiting;
         }
@@ -235,11 +253,16 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
     const cb = struct {
         fn wake(f: *Future, r: *Runtime) Future.State {
-            std.debug.print("Writing new connection\n", .{});
             const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
+            std.debug.assert(ev.status == .complete);
             std.debug.assert(ev.status.complete == .writev);
+
             const conn = f.conn;
-            const written = ev.status.complete.writev catch return .failed;
+            connection_log.info("[fd: {d}]\tWriting new connection\n", .{conn.handle});
+            const written = ev.status.complete.writev catch |e| {
+                connection_log.err("[fd: {d}]\tError writing to connection: {any}\n", .{ conn.handle, e });
+                return .failed;
+            };
             const writer = &conn.writer;
             writer.consume(written);
 
@@ -272,12 +295,15 @@ fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
         fn wake(f: *Future, r: *Runtime) Future.State {
             const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             const conn = f.conn;
-            std.debug.print("Connection closed", .{});
-            conn.reset() catch @panic("Failed to reset Connection");
+
+            connection_log.info("[fd: {d}]\tConnection closed", .{conn.handle});
+
+            conn.reset();
             conn.rearm(&r.io, f, ev, r.server.stream.handle);
             return .waiting;
         }
         fn cancel(_: *Future, _: *Runtime) void {
+            //close never fails
             return;
         }
     };

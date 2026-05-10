@@ -13,14 +13,14 @@ conn_slab_size: usize,
 max_read: usize,
 max_write: usize,
 const std = @import("std");
-const lib = @import("lib/lib.zig");
+const lib = @import("lib.zig");
 const route = lib.Router;
 const Parser = lib.HttpParser;
 const Io = lib.Io;
 const Lua = lib.Lua;
-const Router = route.Router(c_int);
-const ConnectionContext = @import("ConnectionContext.zig");
-const Future = @import("Future.zig");
+const Router = route.Router(c_int, .{ .lua = true });
+const ConnectionContext = lib.Connnection;
+const Future = lib.Future;
 const ConnectionPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
 const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
 const FuturePool = std.heap.MemoryPoolExtra(Future, .{ .growable = false });
@@ -38,14 +38,14 @@ pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usiz
     const mul = std.math.mul;
     const mem_per_conn = try add(usize, max_memory_per_connection, try add(usize, max_write, max_read));
     const max_memory = try mul(usize, max_conns, mem_per_conn);
-    const io = try std.math.ceilPowerOfTwo(usize, max_futures);
+    const io = try std.math.ceilPowerOfTwo(usize, max_futures + 1);
     return .{
         .io = try .init(.{ .entries = @min(io, std.math.maxInt(u16)) }),
         .lua = try Lua.init(.{ .allocator = alloc }),
         .router = undefined,
         .connection_pool = try .initPreheated(alloc.*, max_conns),
-        .event_pool = try .initPreheated(alloc.*, io + 1),
-        .future_pool = try .initPreheated(alloc.*, io + 1),
+        .event_pool = try .initPreheated(alloc.*, io),
+        .future_pool = try .initPreheated(alloc.*, io),
         .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
         .conn_slab_size = mem_per_conn,
         .max_read = max_read,

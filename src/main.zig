@@ -1,11 +1,11 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
-const Lua = @import("lib/lib.zig").Lua;
-const Future = @import("Future.zig");
-const Runtime = @import("Runtime.zig");
+const Lua = lib.Lua;
+const Future = lib.Future;
+const Runtime = lib.Future;
 const route = lib.Router;
-const Router = route.Router(c_int);
-const parser = @import("parser.zig");
+const Router = route.Router(c_int, .{ .lua = true });
+const parser = lib.Util.parser;
 const main_log = @import("std").log.scoped(.start_up);
 
 var SHUTDOWN = false;
@@ -98,7 +98,10 @@ inline fn run(args: parser.Args) !void {
         while (event_queue.dequeue()) |event| {
             var future: *Future = @ptrCast(@alignCast(event.context));
             //TODO: handle state
-            _ = future.wake(&runtime);
+            switch (future.wake(&runtime)) {
+                .failed => future.cancel(&runtime),
+                else => {},
+            }
         }
     }
 }
