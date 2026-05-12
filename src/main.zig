@@ -2,7 +2,7 @@ const std = @import("std");
 const lib = @import("lib/lib.zig");
 const Lua = lib.Lua;
 const Future = lib.Future;
-const Runtime = lib.Future;
+const Runtime = lib.Runtime;
 const route = lib.Router;
 const Router = route.Router(c_int, .{ .lua = true });
 const parser = lib.Util.parser;
@@ -83,6 +83,7 @@ inline fn run(args: parser.Args) !void {
     defer runtime.deinit();
 
     runtime.lua.openLibs();
+    runtime.openLibRover();
     runtime.loadMain(args.file);
     //TODO: get user defined error handler
     runtime.buildRouter(alloc);

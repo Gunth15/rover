@@ -350,7 +350,7 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
             }
             unreachable;
         }
-        ///Uses notfound handler if it one exist.
+        ///Uses notfound handler if one exist.
         //If in Lua mode, pushes assigns table to top of lua stack
         pub fn search(r: *Self, assigns: if (opts.lua) *Lua else *std.StringArrayHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
             if (opts.lua) assigns.newTable();

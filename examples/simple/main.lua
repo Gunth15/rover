@@ -5,6 +5,6 @@ function rover.routes()
 	}
 end
 
-function Hello(_)
-	return conn:send_bytes("<h1>Welcome</h1>")
+function Hello(conn)
+	return conn:send_bytes(200, nil, "<h1>Welcome</h1>")
 end

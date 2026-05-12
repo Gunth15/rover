@@ -148,7 +148,7 @@ pub fn push(l: *LuaState, arg: anytype) void {
     if (@TypeOf(arg) == Function) return c.lua_pushcfunction(l.state, arg);
     switch (@typeInfo(ArgType)) {
         .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else structToTable(arg),
-        .int, .comptime_int => c.lua_pushinteger(l.state, arg),
+        .int, .comptime_int => c.lua_pushinteger(l.state, @intCast(arg)),
         .float, .comptime_float => c.lua_pushnumber(l.state, arg),
         .bool => c.lua_pushboolean(l.state, if (arg) 1 else 0),
         .null => c.lua_pushnil(l.state),
@@ -161,6 +161,17 @@ pub fn push(l: *LuaState, arg: anytype) void {
             }
             if (info.size == .c and info.child == u8 and info.is_const) {
                 _ = c.lua_pushstring(l.state, arg);
+                return;
+            }
+            switch (@typeInfo(info.child)) {
+                .array => |arr| {
+                    if (arr.child == u8) {
+                        const slice: []const u8 = arg;
+                        _ = c.lua_pushlstring(l.state, slice.ptr, slice.len);
+                        return;
+                    }
+                },
+                else => {},
             }
             return c.lua_pushlightuserdata(l.state, arg);
         },
@@ -169,6 +180,9 @@ pub fn push(l: *LuaState, arg: anytype) void {
 }
 pub fn pushThread(l: *LuaState) void {
     return c.lua_pushthread(l.state);
+}
+pub fn Next(l: *LuaState, index: isize) LuaType {
+    return @enumFromInt(c.lua_next(l.state, @intCast(index)));
 }
 ///Pops given value to lua
 ///structs are interpretted using their luaTo method, if it one does not exit, it is treated as a table.
@@ -270,6 +284,10 @@ pub fn register(l: *LuaState, name: [:0]const u8, comptime func: anytype) void {
 
 pub fn openLibs(l: *LuaState) void {
     return c.luaL_openlibs(l.state);
+}
+
+pub fn insert(l: *LuaState, n: i64) void {
+    return c.lua_rotate(l.state, @intCast(n), 1);
 }
 
 //pops n values form the stack
@@ -396,8 +414,8 @@ pub fn getTable(l: *LuaState, index: isize) LuaType {
 pub fn getMetaTable(l: *LuaState, index: usize) error{NotPushed}!void {
     return if (c.lua_getmetatable(l, index) != 0) {} else return error.NotPushed;
 }
-pub fn setMetaTable(l: *LuaState, index: usize) void {
-    _ = c.lua_setmetatable(l, index);
+pub fn setMetaTable(l: *LuaState, index: isize) void {
+    _ = c.lua_setmetatable(l.state, @intCast(index));
     return;
 }
 ///t[n] where to is the table of the given index, the value pushed on top of the stack
@@ -428,6 +446,9 @@ pub fn getField(l: *LuaState, index: isize, name: []const u8) LuaType {
 }
 pub fn getTop(l: *LuaState) isize {
     return @intCast(c.lua_gettop(l.state));
+}
+pub fn setTop(l: *LuaState, idx: isize) void {
+    return c.lua_settop(l.state, @intCast(idx));
 }
 pub fn getGlobal(l: *LuaState, name: [:0]const u8) LuaType {
     return @enumFromInt(c.lua_getglobal(l.state, name));
@@ -483,7 +504,7 @@ fn structToTable(l: *LuaState, table: anytype) void {
         l.setTable(-3);
     }
 }
-//TODO: support anytype using a union
+//TODO: CHANGE THIS COMPLETELY. Too high level and complex
 fn toLuaFuntcion(comptime func: anytype) Function {
     const FuncType = @TypeOf(func);
     const FuncInfo = @typeInfo(FuncType);

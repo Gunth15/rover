@@ -3,8 +3,8 @@ handle: Io.Handle = undefined,
 req_threads: std.ArrayList(Thread),
 rvec: [2]Io.Vec = undefined,
 wvec: [2]Io.Vec = undefined,
-reader: lib.Reader,
-writer: lib.Writer,
+reader: Reader,
+writer: Writer,
 slab: std.heap.FixedBufferAllocator,
 allocation_fail_count: usize = 0,
 req_bytes_read: usize = 0,
@@ -21,6 +21,8 @@ const Parser = lib.HttpParser;
 const EventQueue = lib.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
 const Router = lib.Router.Router(c_int, .{ .lua = true });
+const Reader = lib.Util.Reader;
+const Writer = lib.Util.Writer;
 const connection_log = std.log.scoped(.connection);
 
 const Thread = struct {
@@ -29,9 +31,13 @@ const Thread = struct {
     arena: std.heap.ArenaAllocator,
     fn resumeT(t: *Thread) void {
         var nresults: usize = 0;
-        switch (t.lthread.resumeT(null, 1, &nresults) catch @panic("Out of memory or some other runtime error, TODO: handle cases properly")) {
+        switch (t.lthread.resumeT(null, 1, &nresults) catch {
+            const err = t.lthread.to(Lua.String, -1) catch unreachable;
+            @panic(err);
+        }) {
             .OK => {
                 //cleanup thread
+
             },
             .YIELDED => {
                 //assumes a future was sent somwhere
@@ -42,44 +48,47 @@ const Thread = struct {
         //send connection
         const thread: *Lua = &t.lthread;
 
-        connection_log.info("Getting handler for path {s} with method {s}\n", .{ req.path, req.method });
+        connection_log.info("[fd: {d}] Getting handler for path {s} with method {s}", .{ conn.handle, req.path, req.method });
 
         //create connection table
         thread.newTable();
+        const conn_table = thread.getTop();
 
         const lfunc = router.search(thread, req.method, req.path) catch @panic("Router error");
         thread.setField(-2, "assigns");
-        std.debug.assert(thread.getRef(lfunc) == .func);
-        connection_log.info("Router found handler :{d}\n", .{lfunc});
 
         thread.push(req.headers.get("Host"));
         thread.setField(-2, "host");
 
+        thread.push(req.minor_version);
+        thread.setField(-2, "minor");
+
         thread.push(req.method);
         thread.setField(-2, "method");
 
-        //TODO: handle header differnelty
-        //thread.push(req.headers);
-        //thread.setField(-2,"headers");
-
-        //TODO: Path info
+        //TODO: handle headers better when I make my own parser
+        thread.newTable();
+        var iter = req.headers.iterator();
+        while (iter.next()) |entry| {
+            thread.push(entry.value_ptr.*);
+            thread.setField(-2, entry.key_ptr.*);
+        }
+        thread.setField(conn_table, "headers");
 
         thread.push(req.path);
-        thread.setField(-2, "request_path");
-
-        //TODO: Scheme
-        //thread.push(req.scheme);
-        //thread.setField(-2, "scheme");
-
-        //TODO: Assigns
-        //thread.push(req.scheme);
-
-        //TODO: shared
-        //thread.push(req.scheme);
+        thread.setField(conn_table, "request_path");
 
         thread.push(conn.addr.getPort());
-        thread.setField(-2, "port");
+        thread.setField(conn_table, "port");
 
+        std.debug.assert(thread.getGlobal("rover") == .table);
+        std.debug.assert(thread.getField(-1, "connection") == .table);
+        thread.setMetaTable(conn_table);
+        thread.pop(1);
+
+        std.debug.assert(thread.getRawI(Lua.RegistryIndex, lfunc) == .func);
+        connection_log.info("[fd: {d}] Router found handler: {d}", .{ conn.handle, lfunc });
+        thread.insert(conn_table);
         t.resumeT();
     }
 };
@@ -93,6 +102,7 @@ pub inline fn init(slab: std.mem.Allocator, mem_size: usize, reader_size: usize,
         .reader = try .init(alloc, reader_size),
         .writer = try .init(alloc, writer_size),
         .allocation_fail_count = 0,
+        .req_threads = try .initCapacity(alloc, 4),
     };
 }
 pub inline fn reset(conn: *ConnectionContext) void {
@@ -103,8 +113,8 @@ pub inline fn reset(conn: *ConnectionContext) void {
     conn.slab.reset();
     const alloc = conn.slab.allocator();
     //shoud never fail
-    conn.reader = .init(alloc, reader_size) catch unreachable;
-    conn.writer = .init(alloc, writer_size) catch unreachable;
+    conn.reader = Reader.init(alloc, reader_size) catch unreachable;
+    conn.writer = Writer.init(alloc, writer_size) catch unreachable;
     conn.allocation_fail_count = 0;
     conn.req_bytes_read = 0;
     conn.total_bytes_read = 0;
@@ -128,9 +138,40 @@ pub fn stop(conn: *ConnectionContext, lua: *Lua, thread: *Thread) void {
         lua.unref(thread.ref);
     }
 
-    const str = thread.lthread.to(Lua.String, -1) catch @panic("Return value is not a string");
-    const wrote = conn.writer.fill(str);
-    if (wrote != str.len) @panic("Full return string not written, TODO: handle this case");
+    var payload_size: usize = 0;
+
+    const version = "HTTP/1.1 ";
+    payload_size += conn.writer.fill(version);
+
+    var l = &thread.lthread;
+    //TODO: make this a check for something
+    std.debug.assert(l.Luatype(-1) == .table);
+    const ret_table = l.getTop();
+
+    std.debug.assert(l.getField(ret_table, "status") == .number);
+    const status = l.to(Lua.Integer, -1) catch unreachable;
+    var status_buf: [3]u8 = undefined;
+    const sb = std.fmt.bufPrint(&status_buf, "{d}", .{status}) catch @panic("Invalid status code");
+    payload_size += conn.writer.fill(sb);
+
+    std.debug.assert(l.getField(ret_table, "headers") == .table);
+    l.push(null);
+    while (l.Next(-2) != .nil) {
+        const key = l.to(Lua.String, -2) catch unreachable;
+        const value = l.to(Lua.String, -1) catch unreachable;
+        payload_size += conn.writer.fill(key);
+        payload_size += conn.writer.fill(":");
+        payload_size += conn.writer.fill(value);
+        payload_size += conn.writer.fill("\r\n");
+        l.pop(1);
+    }
+    payload_size += conn.writer.fill("\r\n");
+
+    std.debug.assert(l.getField(ret_table, "body") == .string);
+    const body = l.to(Lua.String, -1) catch unreachable;
+    payload_size += conn.writer.fill(body);
+
+    if (payload_size < (conn.writer.end - conn.writer.start)) @panic("Full return string not written, TODO: handle this case");
 }
 ///future and evet must outlive function
 ///rearms context to accept new connection handle and address
@@ -144,10 +185,10 @@ pub fn rearm(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event, ser
             const conn = f.conn;
 
             conn.handle = ev.status.complete.accept catch |e| {
-                connection_log.err("[fd: {d}]\tFailed to accept new connection:\t{any}\n", .{e});
+                connection_log.err("[fd: {d}] Failed to accept new connection: {any}", .{ conn.handle, e });
                 return .failed;
             };
-            connection_log.info("[fd: {d}]\tNew connection started\n", .{conn.handle});
+            connection_log.info("[fd: {d}] New connection started", .{conn.handle});
             conn.readAndStart(&r.io, f, ev);
             return .waiting;
         }
@@ -180,7 +221,7 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             const conn = f.conn;
 
             const read_bytes = ev.status.complete.read catch |e| {
-                connection_log.err("[fd: {d}]\tFailed to read connection: {any}\n", .{ conn.handle, e });
+                connection_log.err("[fd: {d}] Failed to read connection: {any}", .{ conn.handle, e });
                 return .failed;
             };
 
@@ -203,18 +244,18 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
             conn.total_bytes_read += read_bytes;
             conn.req_bytes_read += read_bytes;
 
-            connection_log.info("[fd: {d}]\tReading connection\n--------------------\n{s}\n--------------------\n", .{ conn.handle, parsable });
-            connection_log.info("[fd: {d}]\tBytes read so far: {d}", .{ conn.handle, conn.req_bytes_read });
+            connection_log.info("[fd: {d}] Reading connection\n{s}\n{s}\n{s}", .{ conn.handle, "-" ** 50, parsable, "-" ** 50 });
+            connection_log.info("[fd: {d}] Bytes read so far: {d}", .{ conn.handle, conn.req_bytes_read });
             const req = Parser.parse(parsable, conn.slab.allocator(), 64, prev_bytes_read) catch |e| {
                 switch (e) {
                     error.PartialRequest => {
                         //TODO: if req_bytes_read == max_req_bytes or wrote != read, write log error and return 403, set read_bytes back to 0
-                        connection_log.info("[fd: {d}]\tHttp request partialy read, preping another read\n", .{conn.handle});
+                        connection_log.info("[fd: {d}] Http request partialy read, preping another read", .{conn.handle});
                         conn.readIo(&r.io, f, ev);
                         return .waiting;
                     },
                     else => {
-                        connection_log.err("[fd: {d}]\tFailed to read connection: {any}\n", .{ conn.handle, e });
+                        connection_log.err("[fd: {d}] Failed to read connection: {any}", .{ conn.handle, e });
                         return .failed;
                     },
                 }
@@ -222,15 +263,16 @@ fn readAndStart(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) 
 
             reader.consumeHead(req.size);
             conn.req_bytes_read -= req.size;
-            connection_log.info("[fd: {d}]\tTotal Bytes read: {d}\nRequest Size: {d}\n", .{ conn.handle, conn.total_bytes_read, req.size });
+            connection_log.info("[fd: {d}] Total Bytes read: {d}", .{ conn.handle, conn.total_bytes_read });
+            connection_log.info("[fd: {d}] Request Size: {d}", .{ conn.handle, req.size });
 
             //TODO: if connection is keep-alive, read again until timeout or close is sent by user
             //SEND ANOTHER READ
 
-            connection_log.info("[fd: {d}]\tStarting new lua thread\n", .{conn.handle});
+            connection_log.info("[fd: {d}] Starting new lua thread", .{conn.handle});
             var thread = conn.start(&r.lua, &r.router, req) catch |e| @panic(@typeName(@TypeOf(e)));
+            connection_log.info("[fd: {d}] Shutting down lua thread", .{conn.handle});
             conn.stop(&r.lua, &thread);
-            connection_log.info("[fd: {d}]\tShutting down lua thread\n", .{conn.handle});
             conn.write(&r.io, f, ev);
             return .waiting;
         }
@@ -258,9 +300,9 @@ fn write(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
             std.debug.assert(ev.status.complete == .writev);
 
             const conn = f.conn;
-            connection_log.info("[fd: {d}]\tWriting new connection\n", .{conn.handle});
+            connection_log.info("[fd: {d}] Writing new connection", .{conn.handle});
             const written = ev.status.complete.writev catch |e| {
-                connection_log.err("[fd: {d}]\tError writing to connection: {any}\n", .{ conn.handle, e });
+                connection_log.err("[fd: {d}] Error writing to connection: {any}", .{ conn.handle, e });
                 return .failed;
             };
             const writer = &conn.writer;
@@ -296,7 +338,7 @@ fn close(c: *ConnectionContext, io: *Io, fut: *Future, event: *Io.Event) void {
             const ev: *Io.Event = @ptrCast(@alignCast(f.ctxt));
             const conn = f.conn;
 
-            connection_log.info("[fd: {d}]\tConnection closed", .{conn.handle});
+            connection_log.info("[fd: {d}] Connection closed", .{conn.handle});
 
             conn.reset();
             conn.rearm(&r.io, f, ev, r.server.stream.handle);

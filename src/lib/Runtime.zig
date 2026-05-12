@@ -27,11 +27,7 @@ const FuturePool = std.heap.MemoryPoolExtra(Future, .{ .growable = false });
 const runtime_log = @import("std").log.scoped(.runtime);
 
 const Runtime = @This();
-
-pub fn addRoverIOLib(_: *Lua) void {}
-const Dir = struct {
-    handle: Io.Handle,
-};
+const LibRover = @embedFile("librover.lua");
 
 pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
     const add = std.math.add;
@@ -79,11 +75,29 @@ pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
     }
 }
 
+pub fn openLibRover(r: *Runtime) void {
+    r.lua.newTable();
+    r.lua.setGlobal("rover");
+    r.lua.loadString(LibRover) catch {
+        const err = r.lua.to(Lua.String, -1) catch unreachable;
+        fatal("{s}", .{err}, 1);
+    };
+    r.lua.pcall(0, 0) catch {
+        const err = r.lua.to(Lua.String, -1) catch unreachable;
+        fatal("Error during initialization: {s}", .{err}, 1);
+    };
+
+    std.debug.assert(r.lua.getGlobal("require") == .func);
+    r.lua.push("rover");
+
+    r.lua.pcall(1, 1) catch {
+        const err = r.lua.to(Lua.String, -1) catch unreachable;
+        fatal("Failed requiring rover: {s}", .{err}, 1);
+    };
+}
 pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
     const lua = &r.lua;
     //load main file(allow user to define path to file)
-    lua.newTable();
-    lua.setGlobal("rover");
     lua.loadFile(file) catch {
         const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("{s}", .{err}, 1);
