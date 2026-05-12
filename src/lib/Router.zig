@@ -355,11 +355,11 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
         pub fn search(r: *Self, assigns: if (opts.lua) *Lua else *std.StringArrayHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
             if (opts.lua) assigns.newTable();
             const putfn = struct {
-                fn put(a: @TypeOf(assigns), edge: []const u8, path: []const u8) !void {
+                fn put(a: @TypeOf(assigns), key: []const u8, value: []const u8) !void {
                     if (opts.lua) {
-                        a.push(path);
-                        a.setField(-2, edge[1..]);
-                    } else try a.put(edge[1..], path);
+                        a.push(value);
+                        a.setField(-2, key);
+                    } else try a.put(key, value);
                 }
             };
             var path = full_path;
