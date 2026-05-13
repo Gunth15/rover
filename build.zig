@@ -4,43 +4,31 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    //c imports
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/lib/c.h"),
+        .link_libc = true,
+        .target = target,
+        .optimize = optimize,
+    });
+
     //lib
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{
+                .name = "c",
+                .module = translate_c.createModule(),
+            },
+        },
     });
-    const lib = b.addLibrary(.{
-        .name = "rover",
-        .linkage = .static,
-        .root_module = lib_module,
-    });
-
-    //libpico
-    const pico_lib = b.addLibrary(.{
-        .name = "pico",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    pico_lib.addCSourceFile(.{ .file = b.path("./src/lib/httpparser/picohttpparser.c") });
-    lib.linkLibrary(pico_lib);
-
-    //liblua
-    const lua_lib = b.addLibrary(.{
-        .name = "lua",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    lua_lib.addCSourceFiles(.{
+    //pico
+    lib_module.addCSourceFile(.{ .file = b.path("src/lib/httpparser/picohttpparser.c") });
+    //lua
+    lib_module.addCSourceFiles(.{
         .root = b.path("src/lib/lua/lua_5.4.8/src"),
         .files = &.{
             "lapi.c",     "lcode.c",    "lctype.c",   "ldebug.c",  "ldo.c",
@@ -53,10 +41,11 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{"-DLUA_COMPAT_5_3"},
     });
-    lib.linkLibrary(lua_lib);
-
-    lib.addIncludePath(b.path("src/lib/httpparser"));
-    lib.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
+    const lib = b.addLibrary(.{
+        .name = "rover",
+        .linkage = .static,
+        .root_module = lib_module,
+    });
     b.installArtifact(lib);
 
     //exe
@@ -67,8 +56,6 @@ pub fn build(b: *std.Build) void {
     });
     exe_module.linkLibrary(lib);
     const exe = b.addExecutable(.{ .name = "rover", .root_module = exe_module });
-    exe.addIncludePath(b.path("src/lib/httpparser"));
-    exe.addIncludePath(b.path("src/lib/lua/lua_5.4.8/src"));
     b.installArtifact(exe);
 
     //test
