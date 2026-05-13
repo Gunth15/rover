@@ -2,12 +2,7 @@
 state: *c.lua_State,
 
 const std = @import("std");
-const c = @cImport({
-    @cInclude("lua.h");
-    @cInclude("luaconf.h");
-    @cInclude("lauxlib.h");
-    @cInclude("lualib.h");
-});
+const c = @import("c");
 const LuaState = @This();
 pub const Number = f64;
 pub const Integer = isize;

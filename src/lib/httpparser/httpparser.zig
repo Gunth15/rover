@@ -1,7 +1,5 @@
 const std = @import("std");
-const libpico = @cImport(
-    @cInclude("picohttpparser.h"),
-);
+const libpico = @import("c");
 
 pub const Headers = std.StringArrayHashMapUnmanaged([]const u8);
 pub const Request = struct {
