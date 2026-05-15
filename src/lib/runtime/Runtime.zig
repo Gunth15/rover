@@ -4,19 +4,16 @@ server: std.net.Server = undefined,
 lua: Lua,
 router: Router,
 //TODO: Connections no longer need to be pooled because they are reused
-//same for the event and future used by the conncetion
-connection_pool: ConnectionPool,
-event_pool: EventPool,
-future_pool: FuturePool,
 slab: std.heap.FixedBufferAllocator,
 conn_slab_size: usize,
 max_read: usize,
 max_write: usize,
 const std = @import("std");
-const lib = @import("lib.zig");
+const lib = @import("../lib.zig");
 const route = lib.Router;
 const Parser = lib.HttpParser;
-const Io = lib.Io;
+const Task = @import("Task.zig");
+const Io = std.Io;
 const Lua = lib.Lua;
 const Router = route.Router(c_int, .{ .lua = true });
 const ConnectionContext = lib.Connnection;
@@ -24,24 +21,22 @@ const Future = lib.Future;
 const ConnectionPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
 const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
 const FuturePool = std.heap.MemoryPoolExtra(Future, .{ .growable = false });
-const runtime_log = @import("std").log.scoped(.runtime);
+const runtime_log = std.log.scoped(.runtime);
 
+pub const Thread = @import("LuaThread.zig");
 const Runtime = @This();
 const LibRover = @embedFile("librover.lua");
 
-pub fn init(alloc: *const std.mem.Allocator, max_conns: usize, max_futures: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
+pub fn init(alloc: *const std.mem.Allocator, io: Io, max_conns: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
     const add = std.math.add;
     const mul = std.math.mul;
     const mem_per_conn = try add(usize, max_memory_per_connection, try add(usize, max_write, max_read));
     const max_memory = try mul(usize, max_conns, mem_per_conn);
-    const io = try std.math.ceilPowerOfTwo(usize, max_futures + 1);
     return .{
-        .io = try .init(.{ .entries = @min(io, std.math.maxInt(u16)) }),
+        .io = io,
         .lua = try Lua.init(.{ .allocator = alloc }),
         .router = undefined,
         .connection_pool = try .initPreheated(alloc.*, max_conns),
-        .event_pool = try .initPreheated(alloc.*, io),
-        .future_pool = try .initPreheated(alloc.*, io),
         .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
         .conn_slab_size = mem_per_conn,
         .max_read = max_read,
@@ -186,9 +181,12 @@ pub fn runLoadFunc(r: *Runtime) void {
     }
 }
 
-pub fn cancel(_: *Future, _: *Runtime, _: *ConnectionContext, ctxt: *anyopaque) void {
-    const event: Io.Event = @ptrCast(ctxt);
-    std.debug.print("Failed to setup a connection, {any}", .{event});
+pub fn tick(r: *Runtime) void {
+    const ev_queue = r.io.flush(0) catch @panic("TODO");
+    while (ev_queue.dequeue()) |ev| {
+        const task: Task = @ptrCast(ev.context);
+        task.resumeCtxt();
+    }
 }
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {

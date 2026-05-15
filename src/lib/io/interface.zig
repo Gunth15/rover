@@ -2,7 +2,7 @@
 const std = @import("std");
 const buitin = @import("builtin");
 const IoUring = std.os.linux.IoUring;
-const Address = std.net.Address;
+const Address = std.Io.net.Ip4Address;
 const posix = std.posix;
 
 pub const Handle = switch (buitin.os.tag) {
@@ -147,7 +147,7 @@ pub const Operation = union(enum) {
     accept: struct {
         handle: Handle,
         addr: *Address,
-        addr_len: posix.socklen_t = @sizeOf(std.net.Address),
+        addr_len: posix.socklen_t = @sizeOf(Address),
     },
     accept_multishot: struct {
         handle: Handle,

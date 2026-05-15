@@ -28,7 +28,7 @@ pub const Vec = interface.Vec;
 // 5. wake: notifies IO to exit blocking state
 // Sadly specific IO errors are not part of the interface, so must be debugged in the implementation
 const Impl = switch (builtin.os.tag) {
-    .linux => @import("linux.zig"),
+    .linux => @import("Uring.zig"),
     else => @compileError("Unsupported operating system"),
 };
 pub inline fn init(options: interface.Options) !Io {
@@ -86,7 +86,7 @@ test "simple connection test" {
     const client_thread = try std.Thread.spawn(.{}, clientcb.createconnection, .{server.listen_address});
     defer client_thread.join();
 
-    var client_addr: std.net.Address = undefined;
+    var client_addr: std.net.Address = .{ .any = undefined };
     var accept_ev = Event.accept(&.{}, server.stream.handle, &client_addr);
     try io.submit(&accept_ev);
 

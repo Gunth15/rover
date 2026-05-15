@@ -1,10 +1,5 @@
-addr: std.net.Address = undefined,
-handle: Io.Handle = undefined,
+stream: Io.net.Stream = undefined,
 req_threads: std.ArrayList(Thread),
-rvec: [2]Io.Vec = undefined,
-wvec: [2]Io.Vec = undefined,
-reader: Reader,
-writer: Writer,
 slab: std.heap.FixedBufferAllocator,
 allocation_fail_count: usize = 0,
 req_bytes_read: usize = 0,
@@ -12,10 +7,9 @@ total_bytes_read: usize = 0,
 
 const ConnectionContext = @This();
 const std = @import("std");
-const lib = @import("lib.zig");
+const lib = @import("../lib.zig");
 const Runtime = lib.Runtime;
-const Future = lib.Future;
-const Io = lib.Io;
+const Io = std.Io;
 const Lua = lib.Lua;
 const Parser = lib.HttpParser;
 const EventQueue = lib.Queue(Io.Event);
@@ -118,6 +112,10 @@ pub inline fn reset(conn: *ConnectionContext) void {
     conn.allocation_fail_count = 0;
     conn.req_bytes_read = 0;
     conn.total_bytes_read = 0;
+}
+pub fn handle(conn: *ConnectionContext, io: Io) void {
+    io.async(io.futexWait, args: (unknown type))
+
 }
 pub fn start(conn: *ConnectionContext, lua: *Lua, router: *Router, req: HttpParser.Request) !Thread {
     const lthread = try lua.newThread();

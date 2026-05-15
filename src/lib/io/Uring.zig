@@ -2,6 +2,7 @@ iouring: IoUring,
 eventfd: linux.fd_t,
 
 const std = @import("std");
+const Alignment = std.mem.Alignment;
 const config = @import("config");
 const linux = std.os.linux;
 const IoUring = std.os.linux.IoUring;
@@ -9,7 +10,7 @@ const interface = @import("interface.zig");
 const posix = std.posix;
 const Queue = @import("../util/queue.zig").Queue;
 
-const IO = @This();
+const Uring = @This();
 
 //These come from the common interface defined in "interface.zig"
 const OpenError = interface.OpenError;
@@ -22,20 +23,20 @@ const Handle = interface.Handle;
 const Event = interface.Event;
 const Vec = interface.Vec;
 
-pub fn init(options: interface.Options) !IO {
-    const iouring = IoUring.init(options.entries, linux.IORING_SETUP_SINGLE_ISSUER) catch return error.InitializationFailed;
-    var uring: IO = .{
+pub fn init(options: interface.Options) !Uring {
+    const iouring = IoUring.init(options.entries, linux.UringRING_SETUP_SINGLE_ISSUER) catch return error.InitializationFailed;
+    var uring: Uring = .{
         .iouring = iouring,
         .eventfd = @intCast(std.os.linux.eventfd(0, 0)),
     };
     try uring.iouring.register_eventfd(uring.eventfd);
     return uring;
 }
-pub fn deinit(self: *IO) void {
+pub fn deinit(self: *Uring) void {
     self.iouring.deinit();
 }
 
-pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!void {
+pub fn submit(self: *Uring, event: *interface.Event) error{ UringFull, PathTooLong }!void {
     std.debug.assert(event.status == .pending);
     _ = sqe: switch (event.status.pending) {
         .accept => |a| {
@@ -81,9 +82,9 @@ pub fn submit(self: *IO, event: *interface.Event) error{ IOFull, PathTooLong }!v
             break :sqe self.iouring.writev(@intFromPtr(event), w.handle, iovecs, w.offset);
         },
         .write => |w| self.iouring.write(@intFromPtr(event), w.handle, w.buffer, w.offset),
-    } catch return error.IOFull;
+    } catch return error.UringFull;
 }
-pub fn flush(self: *IO, wait_nr: u32) error{UnableToFlush}!Queue(interface.Event) {
+pub fn flush(self: *Uring, wait_nr: u32) error{UnableToFlush}!Queue(interface.Event) {
     var cqes: [256]linux.io_uring_cqe = undefined;
     _ = self.iouring.submit() catch return error.UnableToFlush;
     const len = self.iouring.copy_cqes(&cqes, wait_nr) catch return error.UnableToFlush;
@@ -94,7 +95,7 @@ pub fn flush(self: *IO, wait_nr: u32) error{UnableToFlush}!Queue(interface.Event
     }
     return queue;
 }
-pub fn wake(self: *IO) void {
+pub fn wake(self: *Uring) void {
     const buf: u64 = 1;
     _ = std.os.linux.write(@intCast(self.eventfd), std.mem.asBytes(&buf), 8);
 }
@@ -167,7 +168,7 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
                     .NFILE => OpenError.SystemFileLimit,
                     .BADF => OpenError.InvalidFileDescriptor,
                     .INVAL => OpenError.InvalidArgument,
-                    .IO => OpenError.IoError,
+                    .Uring => OpenError.IoError,
                     .FAULT => OpenError.MemoryFault,
                     .DQUOT => OpenError.QuotaExceeded,
                     .BUSY => OpenError.Busy,
@@ -187,7 +188,7 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
                         .FAULT => ReadError.MemoryFault,
                         .INTR => ReadError.Interrupted,
                         .INVAL => ReadError.InvalidArgument,
-                        .IO => ReadError.IoError,
+                        .Uring => ReadError.IoError,
                         .ISDIR => ReadError.IsDirectory,
                         .NOMEM => ReadError.OutOfMemory,
                         .NOBUFS => ReadError.NoBufferSpace,
@@ -209,7 +210,7 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
                         .FAULT => SendError.MemoryFault,
                         .INTR => SendError.Interrupted,
                         .INVAL => SendError.InvalidArgument,
-                        .IO => SendError.IoError,
+                        .Uring => SendError.IoError,
                         .NOBUFS => SendError.NoBufferSpace,
                         .NOMEM => SendError.OutOfMemory,
                         .NOTCONN => SendError.NotConnected,
@@ -233,7 +234,7 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
                         .FAULT => WriteError.MemoryFault,
                         .INTR => WriteError.Interrupted,
                         .INVAL => WriteError.InvalidArgument,
-                        .IO => WriteError.IoError,
+                        .Uring => WriteError.IoError,
                         .NOSPC => WriteError.NoSpaceLeft,
                         .PIPE => WriteError.BrokenPipe,
                         .DQUOT => WriteError.QuotaExceeded,
@@ -256,7 +257,7 @@ fn fillCompletion(event: *interface.Event, cqe: linux.io_uring_cqe) *Event {
                         .FAULT => WriteError.MemoryFault,
                         .INTR => WriteError.Interrupted,
                         .INVAL => WriteError.InvalidArgument,
-                        .IO => WriteError.IoError,
+                        .Uring => WriteError.IoError,
                         .NOSPC => WriteError.NoSpaceLeft,
                         .PIPE => WriteError.BrokenPipe,
                         .DQUOT => WriteError.QuotaExceeded,
