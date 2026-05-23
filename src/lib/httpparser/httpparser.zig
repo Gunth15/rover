@@ -12,7 +12,7 @@ pub const Request = struct {
     size: usize,
 };
 
-const ParseError = error{
+pub const ParseError = error{
     PartialRequest,
     ParseFailure,
     TooManyHeaders,

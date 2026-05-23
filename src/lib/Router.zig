@@ -75,7 +75,7 @@ pub fn Node(T: type) type {
         indices: std.ArrayList(u8) = .empty,
         wild_child: bool = false,
         children: std.ArrayList(*Self) = .empty,
-        handles: std.AutoArrayHashMap(Method, T),
+        handles: std.AutoHashMap(Method, T),
         //get next child
         fn next(n: *Self, path: []const u8) ?*Self {
             const cidx = path[0];

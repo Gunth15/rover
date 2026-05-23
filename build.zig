@@ -4,9 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zio = b.dependency("zio", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     //c imports
     const translate_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/lib/c.h"),
+        .root_source_file = b.path("src/vendor/c.h"),
         .link_libc = true,
         .target = target,
         .optimize = optimize,
@@ -26,10 +31,10 @@ pub fn build(b: *std.Build) void {
         },
     });
     //pico
-    lib_module.addCSourceFile(.{ .file = b.path("src/lib/httpparser/picohttpparser.c") });
+    lib_module.addCSourceFile(.{ .file = b.path("src/vendor/httpparser/picohttpparser.c") });
     //lua
     lib_module.addCSourceFiles(.{
-        .root = b.path("src/lib/lua/lua_5.4.8/src"),
+        .root = b.path("src/vendor/lua_5.4.8/src"),
         .files = &.{
             "lapi.c",     "lcode.c",    "lctype.c",   "ldebug.c",  "ldo.c",
             "ldump.c",    "lfunc.c",    "lgc.c",      "llex.c",    "lmem.c",
@@ -53,8 +58,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "zio",
+                .module = zio.module("zio"),
+            },
+            .{
+                .name = "lib",
+                .module = lib_module,
+            },
+            .{
+                .name = "c",
+                .module = translate_c.createModule(),
+            },
+        },
     });
-    exe_module.linkLibrary(lib);
     const exe = b.addExecutable(.{ .name = "rover", .root_module = exe_module });
     b.installArtifact(exe);
 

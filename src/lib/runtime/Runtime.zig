@@ -1,73 +1,56 @@
 io: Io,
-//connection entry point stream
-server: std.net.Server = undefined,
+server: Io.net.Server = undefined,
 lua: Lua,
 router: Router,
-//TODO: Connections no longer need to be pooled because they are reused
-slab: std.heap.FixedBufferAllocator,
-conn_slab_size: usize,
+allocator: std.mem.Allocator,
 max_read: usize,
 max_write: usize,
 const std = @import("std");
 const lib = @import("../lib.zig");
 const route = lib.Router;
 const Parser = lib.HttpParser;
-const Task = @import("Task.zig");
 const Io = std.Io;
 const Lua = lib.Lua;
 const Router = route.Router(c_int, .{ .lua = true });
-const ConnectionContext = lib.Connnection;
-const Future = lib.Future;
-const ConnectionPool = std.heap.MemoryPoolExtra(ConnectionContext, .{ .growable = false });
-const EventPool = std.heap.MemoryPoolExtra(Io.Event, .{ .growable = false });
-const FuturePool = std.heap.MemoryPoolExtra(Future, .{ .growable = false });
+const Connection = lib.Connnection;
 const runtime_log = std.log.scoped(.runtime);
 
 pub const Thread = @import("LuaThread.zig");
 const Runtime = @This();
-const LibRover = @embedFile("librover.lua");
+const LibRover = @embedFile("../librover.lua");
 
-pub fn init(alloc: *const std.mem.Allocator, io: Io, max_conns: usize, max_memory_per_connection: usize, max_read: usize, max_write: usize) !Runtime {
-    const add = std.math.add;
-    const mul = std.math.mul;
-    const mem_per_conn = try add(usize, max_memory_per_connection, try add(usize, max_write, max_read));
-    const max_memory = try mul(usize, max_conns, mem_per_conn);
+//NOTE: GLOBAL NEEDS TO BE ATOMIC ONT THE FUTURE
+var SHUTDOWN = false;
+
+pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write: usize) !Runtime {
     return .{
         .io = io,
         .lua = try Lua.init(.{ .allocator = alloc }),
+        .allocator = alloc.*,
         .router = undefined,
-        .connection_pool = try .initPreheated(alloc.*, max_conns),
-        .slab = std.heap.FixedBufferAllocator.init(try alloc.alloc(u8, max_memory)),
-        .conn_slab_size = mem_per_conn,
         .max_read = max_read,
         .max_write = max_write,
     };
 }
 pub fn deinit(r: *Runtime) void {
-    r.server.deinit();
+    r.server.deinit(r.io);
     r.router.deinit();
-    r.io.deinit();
     r.lua.deinit();
-    r.slab.reset();
-    r.connection_pool.deinit();
-    r.event_pool.deinit();
 }
 
-pub fn serve(r: *Runtime, addr: std.net.Address, connections: usize) !void {
-    const alloc = r.slab.allocator();
-    r.server = try addr.listen(.{ .reuse_address = true });
-    for (0..connections) |_| {
-        const conn: *ConnectionContext = try r.connection_pool.create();
-        const event = try r.event_pool.create();
-        const future = try r.future_pool.create();
-        conn.* = try .init(
-            alloc,
-            r.conn_slab_size,
-            r.max_read,
-            r.max_write,
-        );
-        conn.rearm(&r.io, future, event, r.server.stream.handle);
+pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
+    const io: Io = r.io;
+    r.server = try addr.listen(io, .{ .reuse_address = true });
+
+    var group: Io.Group = .init;
+    errdefer group.cancel(r.io);
+
+    while (!SHUTDOWN) {
+        const stream = try r.server.accept(io);
+        try group.concurrent(io, Connection.handle, .{ r, stream });
     }
+
+    try group.await(r.io);
 }
 
 pub fn openLibRover(r: *Runtime) void {
@@ -178,14 +161,6 @@ pub fn runLoadFunc(r: *Runtime) void {
         //Dore not exist(this is ok)
         .nil => {},
         else => fatal("rover.load was not a function", .{}, 1),
-    }
-}
-
-pub fn tick(r: *Runtime) void {
-    const ev_queue = r.io.flush(0) catch @panic("TODO");
-    while (ev_queue.dequeue()) |ev| {
-        const task: Task = @ptrCast(ev.context);
-        task.resumeCtxt();
     }
 }
 

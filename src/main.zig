@@ -1,7 +1,7 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
+const zio = @import("zio");
 const Lua = lib.Lua;
-const Future = lib.Future;
 const Runtime = lib.Runtime;
 const route = lib.Router;
 const Router = route.Router(c_int, .{ .lua = true });
@@ -20,6 +20,7 @@ const HELP =
     \\  run                 Runs a Lua program(defaults to main.lua)
     \\  help                Show all commands
     \\  routes              Displays all routes
+    \\
 ;
 const HELPRUN =
     \\Rover 0.0.1
@@ -59,24 +60,30 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
 }
 
 inline fn run(args: parser.Args) !void {
-    if (args.help) {
-        _ = std.fs.File.stdout().write(HELPRUN) catch {};
-        return;
-    }
-
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer {
-        if (debug_allocator.detectLeaks()) {
+        if (debug_allocator.detectLeaks() != 0) {
             std.debug.print("LEAKED MEMORY\n", .{});
         }
     }
+
     const alloc = debug_allocator.allocator();
+
+    const rt = try zio.Runtime.init(alloc, .{
+        .thread_pool = .{
+            .max_threads = 1,
+        },
+    });
+    defer rt.deinit();
+    const io = rt.io();
+    if (args.help) {
+        std.Io.File.stdout().writeStreamingAll(io, HELPRUN) catch {};
+        return;
+    }
 
     var runtime: Runtime = try .init(
         &alloc,
-        args.connections,
-        args.io,
-        args.memory,
+        io,
         args.read,
         args.write,
     );
@@ -90,24 +97,17 @@ inline fn run(args: parser.Args) !void {
     runtime.runLoadFunc();
 
     //TODO: make signalfd()
-    //add read event
-
-    try runtime.serve(args.addr, args.connections);
-    while (!SHUTDOWN) {
-        //Flush io and try to handle immediately
-        var event_queue = try runtime.io.flush(1);
-        while (event_queue.dequeue()) |event| {
-            var future: *Future = @ptrCast(@alignCast(event.context));
-            //TODO: handle state
-            switch (future.wake(&runtime)) {
-                .failed => future.cancel(&runtime),
-                else => {},
-            }
-        }
-    }
+    try runtime.serve(args.addr);
 }
 inline fn help() !void {
-    _ = std.fs.File.stdout().write(HELP) catch {};
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    const io = threaded.io();
+
+    std.Io.File.stdout().writeStreamingAll(io, HELP) catch {};
     return;
 }
 
@@ -116,9 +116,11 @@ inline fn routes(args: parser.Args) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const stdout = std.fs.File.stdout();
-    var writer = stdout.writer(try alloc.alloc(u8, 4096));
-    defer writer.end() catch {};
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    const io = threaded.io();
+
+    var writer = std.Io.File.stdout().writer(io, try alloc.alloc(u8, 4096));
+    defer writer.flush() catch {};
 
     if (args.help) {
         _ = writer.interface.write(HELPROUTES) catch {};
@@ -136,13 +138,13 @@ inline fn routes(args: parser.Args) !void {
 
     print(&runtime.router.root, alloc, &writer.interface);
 }
-fn print(node: *Router.RNode, alloc: std.mem.Allocator, writer: *std.io.Writer) void {
+fn print(node: *Router.RNode, alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
     var builder: std.ArrayList(u8) = .empty;
     defer builder.deinit(alloc);
 
     printNode(node, &builder, alloc, writer);
 }
-fn printNode(node: *Router.RNode, builder: *std.ArrayList(u8), alloc: std.mem.Allocator, writer: *std.io.Writer) void {
+fn printNode(node: *Router.RNode, builder: *std.ArrayList(u8), alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
     builder.appendSlice(alloc, node.path.slice()) catch {};
     defer builder.items.len -= node.path.len();
 
@@ -171,8 +173,8 @@ fn printNode(node: *Router.RNode, builder: *std.ArrayList(u8), alloc: std.mem.Al
     }
 }
 
-pub fn main() !void {
-    const args = parser.parse();
+pub fn main(init: std.process.Init.Minimal) !void {
+    const args = parser.parse(init.args);
     switch (args.command) {
         .help => return help(),
         .run => return run(args),

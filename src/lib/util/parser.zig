@@ -10,11 +10,11 @@ pub const Args = struct {
     read: usize = 4096,
     write: usize = 4096,
     memory: usize = 1024,
-    addr: std.net.Address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8080),
+    addr: std.Io.net.IpAddress = std.Io.net.IpAddress.parse("127.0.0.1", 8080) catch .{},
 };
-pub fn parse() Args {
+pub fn parse(cargs: std.process.Args) Args {
     var args: Args = .{};
-    var iter = std.process.args();
+    var iter = cargs.iterate();
     _ = iter.next();
     const command = iter.next() orelse return args;
     if (std.mem.eql(u8, "help", command)) {
@@ -52,7 +52,7 @@ pub fn parse() Args {
                     args.write = std.fmt.parseInt(usize, write, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{write});
                 } else if (isarg(flag, "-a", "--addr")) {
                     const addr = iter.next() orelse return parseErr(args, "No address provided\n", .{});
-                    args.addr = std.net.Address.parseIpAndPort(addr) catch return parseErr(args, "{s} is not a valid address\n", .{addr});
+                    args.addr = std.Io.net.IpAddress.parseLiteral(addr) catch return parseErr(args, "{s} is not a valid address\n", .{addr});
                 } else if (isarg(flag, "-h", "--help")) {
                     args.help = true;
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
