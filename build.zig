@@ -28,6 +28,10 @@ pub fn build(b: *std.Build) void {
                 .name = "c",
                 .module = translate_c.createModule(),
             },
+            .{
+                .name = "zio",
+                .module = zio.module("zio"),
+            },
         },
     });
     //pico
