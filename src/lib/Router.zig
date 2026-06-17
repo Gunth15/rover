@@ -352,7 +352,7 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
         }
         ///Uses notfound handler if one exist.
         //If in Lua mode, pushes assigns table to top of lua stack
-        pub fn search(r: *Self, assigns: if (opts.lua) *Lua else *std.StringArrayHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
+        pub fn search(r: *Self, assigns: if (opts.lua) *Lua else *std.StringHashMap([]const u8), method: []const u8, full_path: []const u8) SearchError!T {
             if (opts.lua) assigns.newTable();
             const putfn = struct {
                 fn put(a: @TypeOf(assigns), key: []const u8, value: []const u8) !void {
@@ -437,7 +437,7 @@ test "register and find static route" {
 
     try router.regiser("GET", "/home", 1);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     const res = try router.search(&assigns, "GET", "/home");
@@ -452,7 +452,7 @@ test "invalid method" {
 
     try router.regiser("GET", "/home", 1);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     try std.testing.expectError(
@@ -470,7 +470,7 @@ test "path splitting works" {
     try router.regiser("GET", "/cat", 1);
     try router.regiser("GET", "/car", 2);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), try router.search(&assigns, "GET", "/cat"));
@@ -485,7 +485,7 @@ test "named parameter extraction" {
 
     try router.regiser("GET", "/user/:id", 1);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     _ = try router.search(&assigns, "GET", "/user/42");
@@ -501,7 +501,7 @@ test "catch all route" {
 
     try router.regiser("GET", "/static/*filepath", 1);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     _ = try router.search(&assigns, "GET", "/static/js/app.js");
@@ -543,7 +543,7 @@ test "not found" {
     var router = try R.init(std.testing.allocator, false, null, null);
     defer router.deinit();
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     try std.testing.expectError(
@@ -560,7 +560,7 @@ test "trailing slash mismatch" {
 
     try router.regiser("GET", "/home", 1);
 
-    var assigns = std.StringArrayHashMap([]const u8).init(std.testing.allocator);
+    var assigns = std.StringHashMap([]const u8).init(std.testing.allocator);
     defer assigns.deinit();
 
     try std.testing.expectError(

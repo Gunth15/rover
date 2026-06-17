@@ -107,18 +107,6 @@ const Thread = struct {
         }
     }
 };
-pub inline fn init(reader: Io.Reader, writer: Io.Writer) ConnectionContext {
-    return .{
-        .reader = reader,
-        .writer = writer,
-        .allocation_fail_count = 0,
-    };
-}
-pub inline fn reset(conn: *ConnectionContext) void {
-    conn.slab.reset();
-    //shoud never fail
-    conn.total_bytes_read = 0;
-}
 pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
     defer stream.close(runtime.io);
     var arena = std.heap.ArenaAllocator.init(runtime.allocator);

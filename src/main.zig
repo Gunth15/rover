@@ -59,7 +59,7 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
     std.process.exit(status);
 }
 
-inline fn run(args: parser.Args) !void {
+inline fn startRuntime(args: parser.Args) Runtime {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer {
         if (debug_allocator.detectLeaks() != 0) {
@@ -87,13 +87,27 @@ inline fn run(args: parser.Args) !void {
         args.read,
         args.write,
     );
+
+    runtime.lua.openLibs();
+    runtime.openLibRover();
+    runtime.loadMain(args.file);
+
+    //TODO: get user defined error handler
+    runtime.buildRouter();
+    runtime.runLoadFunc();
+
+    return runtime;
+}
+
+inline fn run(args: parser.Args) !void {
+    var runtime = startRuntime(args);
     defer runtime.deinit();
 
     runtime.lua.openLibs();
     runtime.openLibRover();
     runtime.loadMain(args.file);
     //TODO: get user defined error handler
-    runtime.buildRouter(alloc);
+    runtime.buildRouter();
     runtime.runLoadFunc();
 
     //TODO: make signalfd()

@@ -1,7 +1,7 @@
 io: Io,
-server: Io.net.Server = undefined,
+server: ?Io.net.Server = null,
 lua: Lua,
-router: Router,
+router: ?Router = null,
 allocator: std.mem.Allocator,
 max_read: usize,
 max_write: usize,
@@ -27,26 +27,26 @@ pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write:
         .io = io,
         .lua = try Lua.init(.{ .allocator = alloc }),
         .allocator = alloc.*,
-        .router = undefined,
         .max_read = max_read,
         .max_write = max_write,
     };
 }
 pub fn deinit(r: *Runtime) void {
-    r.server.deinit(r.io);
-    r.router.deinit();
+    if (r.server) |server| @constCast(&server).deinit(r.io);
+    if (r.router) |router| @constCast(&router).deinit();
     r.lua.deinit();
 }
 
 pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
     const io: Io = r.io;
     r.server = try addr.listen(io, .{ .reuse_address = true });
+    var server = r.server.?;
 
     var group: Io.Group = .init;
     errdefer group.cancel(r.io);
 
     while (!SHUTDOWN) {
-        const stream = try r.server.accept(io);
+        const stream = try server.accept(io);
         try group.concurrent(io, Connection.handle, .{ r, stream });
     }
 
@@ -86,7 +86,7 @@ pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
     };
 }
 
-pub fn buildRouter(r: *Runtime, alloc: std.mem.Allocator) void {
+pub fn buildRouter(r: *Runtime) void {
     const lua = &r.lua;
 
     //find rover.routes()
@@ -105,11 +105,12 @@ pub fn buildRouter(r: *Runtime, alloc: std.mem.Allocator) void {
 
     //create routing table
     r.router = Router.init(
-        alloc,
+        r.allocator,
         false,
         null,
         null,
     ) catch fatal("Fatal Error, Could not create router, out of memory", .{}, 1);
+    const router = &r.router.?;
     var idx: isize = 1;
     while (lua.getI(routing_table_idx, idx) == .table) : (idx += 1) {
         //expected format {"/path", METHOD = func}
@@ -123,7 +124,7 @@ pub fn buildRouter(r: *Runtime, alloc: std.mem.Allocator) void {
             switch (lua.getField(route_idx, method)) {
                 .func => {
                     const ref = lua.ref();
-                    r.router.regiser(method, path, ref) catch |e| {
+                    router.regiser(method, path, ref) catch |e| {
                         switch (e) {
                             route.RegistrationError.CatchAllIsNotTerminal => fatal("Improper catch-all route {s}, catch-all must be at preceeded by \'\\\'", .{path}, 1),
                             route.RegistrationError.AlreadyExist => fatal("{s} already exist", .{path}, 1),
