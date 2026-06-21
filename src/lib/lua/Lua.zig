@@ -143,7 +143,7 @@ pub fn push(l: *LuaState, arg: anytype) void {
     const ArgType = @TypeOf(arg);
     if (@TypeOf(arg) == CFunction) return c.lua_pushcfunction(l.state, arg);
     switch (@typeInfo(ArgType)) {
-        .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else structToTable(arg),
+        .@"struct" => if (std.meta.hasMethod(ArgType, "luaPush")) arg.luaPush(l.state) else l.structToTable(arg),
         .int, .comptime_int => c.lua_pushinteger(l.state, @intCast(arg)),
         .float, .comptime_float => c.lua_pushnumber(l.state, arg),
         .bool => c.lua_pushboolean(l.state, if (arg) 1 else 0),
@@ -523,9 +523,8 @@ fn structToTable(l: *LuaState, table: anytype) void {
         const key = field.name;
         const value = @field(table, key);
         //table[key] = value
-        l.push(key);
         l.push(value);
-        l.setTable(-3);
+        l.setField(-2, key);
     }
 }
 //TODO: CHANGE THIS COMPLETELY. Too high level and complex

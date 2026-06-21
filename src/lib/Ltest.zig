@@ -40,6 +40,18 @@ pub fn testFunc(l: *Ltest, fname: [:0]const u8, comptime func: *const fn (*Lua) 
         return e;
     };
 }
+pub fn testFuncWithLArgs(l: *Ltest, fname: [:0]const u8, comptime func: *const fn (*Lua) c_int, comptime args: usize) !void {
+    var lua = l.runtime.lua;
+    lua.register(fname, func);
+    _ = lua.getGlobal(fname);
+    var i: isize = @intCast(args + 1);
+    while (i > 1) : (i -= 1) lua.insert(-i);
+    lua.pcall(args, lib.Lua.MULTIRET) catch |e| {
+        const err = lua.catchError();
+        std.debug.print("\nLUA ERROR: {s}\n", .{err});
+        return e;
+    };
+}
 pub fn expectString(l: *Ltest, expected: []const u8) !void {
     var lua = l.runtime.lua;
     const actual = try lua.to(Lua.String, -1);
@@ -66,37 +78,43 @@ pub fn expectTable(l: *Ltest, expected: anytype) !void {
     }
     inline for (fields) |field| {
         const expected_value = @field(expected, field.name);
-        const FieldType = @TypeOf(expected_value);
-
         _ = lua.getField(-1, field.name);
+        try l.innerExpect(expected_value);
 
-        switch (@typeInfo(FieldType)) {
-            .pointer => |info| {
-                if (info.size == .slice and info.child == u8) {
-                    const actual = try lua.to(Lua.String, -1);
-                    try testing.expectEqualStrings(expected_value, actual);
-                } else {
-                    const actual = try lua.to(FieldType, -1);
-                    try testing.expectEqual(expected_value, actual);
-                }
-            },
-            .float, .comptime_float => {
-                const actual = try lua.to(Lua.Number, -1);
-                try testing.expectEqual(@as(f64, expected_value), actual);
-            },
-            .int, .comptime_int => {
-                const actual = try lua.to(Lua.Integer, -1);
-                try testing.expectEqual(@as(Lua.Integer, @intCast(expected_value)), actual);
-            },
-            .bool => {
-                const actual = try lua.to(Lua.Bool, -1);
-                try testing.expectEqual(expected_value, actual);
-            },
-            .@"struct" => {
-                try l.expectTable(expected_value);
-            },
-            else => @compileError("expectTable: unsupported field type " ++ @typeName(FieldType)),
-        }
         lua.pop(1);
+    }
+}
+fn innerExpect(l: *Ltest, expected: anytype) !void {
+    var lua = &l.runtime.lua;
+    const FieldType = @TypeOf(expected);
+    switch (@typeInfo(FieldType)) {
+        .pointer => |info| {
+            if (info.size == .slice and info.child == u8) {
+                const actual = try lua.to(Lua.String, -1);
+                try testing.expectEqualStrings(expected, actual);
+            } else {
+                const actual = try lua.to(FieldType, -1);
+                try testing.expectEqual(expected, actual);
+            }
+        },
+        .optional => {
+            try if (expected) |e| l.innerExpect(e) else testing.expectEqual(expected, null);
+        },
+        .float, .comptime_float => {
+            const actual = try lua.to(Lua.Number, -1);
+            try testing.expectEqual(@as(f64, expected), actual);
+        },
+        .int, .comptime_int => {
+            const actual = try lua.to(Lua.Integer, -1);
+            try testing.expectEqual(@as(Lua.Integer, @intCast(expected)), actual);
+        },
+        .bool => {
+            const actual = try lua.to(Lua.Bool, -1);
+            try testing.expectEqual(expected, actual);
+        },
+        .@"struct" => {
+            try l.expectTable(expected);
+        },
+        else => @compileError("expectTable: unsupported field type " ++ @typeName(FieldType)),
     }
 }
