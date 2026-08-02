@@ -19,9 +19,9 @@ M.__index = M
 ---@field body string
 
 ---@param status number status of request
----@param headers table|nil optionale headers
 ---@param bytes string bytes to transfer
-function M.send_bytes(_self, status, headers, bytes)
+---@param headers table|nil optionale headers
+function M.send_bytes(_self, status, bytes, headers)
 	local h = headers or {}
 	h["Content-Length"] = string.len(bytes)
 	return {
@@ -29,6 +29,23 @@ function M.send_bytes(_self, status, headers, bytes)
 		headers = h,
 		body = bytes,
 	}
+end
+
+---@param status number status of request
+---@param table table json encodable table
+---@param headers table|nil optional headers to add to response
+function M.send_json(self, status, table, headers)
+	headers["Content-Type"] = "application/json"
+	local bytes = rover.json.encode(table)
+	self:send_bytes(status, bytes, headers)
+end
+
+---@param status number status of request
+---@param html string bytes of html
+---@param headers table|nil optional headers to add to response
+function M.send_html(self, status, html, headers)
+	headers["Content-Type"] = "text/html"
+	self:send_bytes(status, html, headers)
 end
 
 return M
