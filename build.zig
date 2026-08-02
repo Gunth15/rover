@@ -35,7 +35,11 @@ pub fn build(b: *std.Build) void {
         },
     });
     //pico
-    lib_module.addCSourceFile(.{ .file = b.path("src/vendor/httpparser/picohttpparser.c") });
+    lib_module.addCSourceFile(.{
+        .file = b.path("src/vendor/httpparser/picohttpparser.c"),
+
+        .flags = &.{"-fno-sanitize=all"},
+    });
     //lua
     lib_module.addCSourceFiles(.{
         .root = b.path("src/vendor/lua_5.4.8/src"),
@@ -48,7 +52,7 @@ pub fn build(b: *std.Build) void {
             "lmathlib.c", "loadlib.c",  "loslib.c",   "lstrlib.c", "ltablib.c",
             "lutf8lib.c", "linit.c",
         },
-        .flags = &.{"-DLUA_COMPAT_5_3"},
+        .flags = &.{ "-DLUA_COMPAT_5_3", "-fno-sanitize=all" },
     });
     const lib = b.addLibrary(.{
         .name = "rover",
