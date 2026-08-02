@@ -50,8 +50,10 @@ const Scanner = struct {
         ExpectedColon,
         ExpectedQuotation,
         UnexpectedUnicode,
+        NoBytes,
     } || Allocator.Error;
-    pub fn init(arena: Allocator, lua: *Lua, str: []const u8) Scanner {
+    pub fn init(arena: Allocator, lua: *Lua, str: []const u8) ScannerError!Scanner {
+        if (str.len == 0) return ScannerError.NoBytes;
         return .{
             .tape = str,
             .cursor = 0,
@@ -367,7 +369,7 @@ fn decode(lua: *Lua) c_int {
     defer arena.deinit();
 
     const alloc = arena.allocator();
-    var scanner = Scanner.init(alloc, lua, str);
+    var scanner = Scanner.init(alloc, lua, str) catch lua.fmtError("No bytes in stream", .{});
     scanner.parseAndPush() catch |e| switch (e) {
         Scanner.ScannerError.UnexpectedCharacter => lua.fmtError("Unexpected character at byte %d", .{scanner.cursor}),
         Scanner.ScannerError.UnexpectedEndOfStream => lua.fmtError("Unexpected end of stream", .{}),
@@ -377,6 +379,7 @@ fn decode(lua: *Lua) c_int {
         Scanner.ScannerError.ExpectedQuotation => lua.fmtError("Expected colon at byte %d", .{scanner.cursor}),
         Scanner.ScannerError.UnexpectedUnicode => lua.fmtError("Unexpected unicode around byte %d", .{scanner.cursor}),
         Scanner.ScannerError.OutOfMemory => lua.fmtError("System out of memory, unable to finish encoding", .{}),
+        else => unreachable,
     };
     return 1;
 }
@@ -403,19 +406,17 @@ fn encode(lua: *Lua) c_int {
     return 1;
 }
 
-//TODO: do some fuzzing
-//FUZZING DOES NOT WORK WITH C CODE YET
-test "fuzz decode" {
-    if (true) return;
+//TODO: make encode step
+test "fuzz decode encode decode" {
     const decode_fuzz = struct {
         fn fuzz(_: void, smith: *std.testing.Smith) anyerror!void {
             var test_env = try LTest.init();
             defer test_env.deinit();
 
             var buf: [4096]u8 = undefined;
-            smith.bytes(&buf);
-            std.debug.print("BYTES: {s}", .{buf});
-            try test_env.testFunc("decode", decode, .{&buf});
+
+            const len = smith.slice(&buf);
+            test_env.testFunc("decode", decode, .{buf[0..len]}) catch {};
         }
     };
     try std.testing.fuzz({}, decode_fuzz.fuzz, .{});
