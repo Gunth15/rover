@@ -14,6 +14,7 @@ const Lua = lib.Lua;
 const Router = route.Router(c_int, .{ .lua = true });
 const Connection = lib.Connnection;
 const runtime_log = std.log.scoped(.runtime);
+const ctrlC = lib.Util.ctrlC;
 
 pub const Thread = @import("LuaThread.zig");
 const Runtime = @This();
@@ -45,7 +46,7 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
     var group: Io.Group = .init;
     errdefer group.cancel(r.io);
 
-    while (!SHUTDOWN) {
+    while (!ctrlC.isPressed()) {
         const stream = try server.accept(io);
         try group.concurrent(io, Connection.handle, .{ r, stream });
     }
