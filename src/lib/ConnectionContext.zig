@@ -94,20 +94,21 @@ const Thread = struct {
 
                 _ = writer.write("\r\n") catch unreachable;
 
-                std.debug.assert(l.getField(ret_table, "body") == .string);
-                const body = l.to(Lua.String, -1) catch unreachable;
-                _ = writer.write(body) catch unreachable;
+                if (l.getField(ret_table, "body") == .string) {
+                    const body = l.to(Lua.String, -1) catch unreachable;
+                    _ = writer.write(body) catch unreachable;
+                }
 
                 writer.flush() catch unreachable;
             },
             .YIELDED => {
-                //assumes a future was sent somwhere
                 @panic("TODO: Handle yielding properly");
             },
         }
     }
 };
 pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
+    const conn_handle = stream.socket.handle;
     defer stream.close(runtime.io);
     var arena = std.heap.ArenaAllocator.init(runtime.allocator);
     defer arena.deinit();
@@ -121,10 +122,10 @@ pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
 
     var reader = stream.reader(runtime.io, alloc.alloc(u8, runtime.max_read) catch |e| return connection_log.err("{any}", .{e}));
     var writer = stream.writer(runtime.io, alloc.alloc(u8, runtime.max_write) catch |e| return connection_log.err("{any}", .{e}));
-    var total_bytes_read: usize = 0;
 
     var buffered_Writer: Io.Writer.Allocating = .init(alloc);
     var parsed_bytes: usize = 0;
+    var total_bytes_read: usize = 0;
 
     handle_request: while (true) {
         const limit = runtime.max_read - parsed_bytes;
@@ -139,7 +140,7 @@ pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
 
         total_bytes_read += buf.len;
 
-        connection_log.info("[fd: {d}] Reading connection\n{s}\n{s}\n{s}", .{ stream.socket.handle, "-" ** 50, buf, "-" ** 50 });
+        log_info(conn_handle, "[fd: {d}] Reading connection\n{s}\n{s}\n{s}", .{ stream.socket.handle, "-" ** 50, buf, "-" ** 50 });
         const req = Parser.parse(buf, alloc, 64, parsed_bytes) catch |e| {
             switch (e) {
                 Parser.ParseError.PartialRequest => {
@@ -147,24 +148,31 @@ pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
                     continue :handle_request;
                 },
                 else => {
-                    connection_log.err("[fd: {d}] Failed to read connection: {any}", .{ stream.socket.handle, e });
+                    log_err(conn_handle, "Failed to read connection: {any}", .{e});
                     return;
                 },
             }
         };
+
         parsed_bytes = 0;
         _ = buffered_Writer.writer.consumeAll();
-        connection_log.info("Getting handler for path {s} with method {s}", .{ req.path, req.method });
-        connection_log.info("[fd: {d}] Total Bytes read: {d}", .{ stream.socket.handle, total_bytes_read });
-        connection_log.info("[fd: {d}] Request Size: {d}", .{ stream.socket.handle, req.size });
+        log_info(conn_handle, "Getting handler for path {s} with method {s}", .{ req.path, req.method });
+        log_info(conn_handle, "Total Bytes read: {d}", .{total_bytes_read});
+        log_info(conn_handle, "Request Size: {d}", .{req.size});
 
         var thread = Thread.init(&runtime.lua) catch @panic("Could not allocate enough memory for a lau thread");
         defer thread.deinit();
         thread.createConnectionTable(&runtime.router, &req);
 
         //this is not thread safe lol
-        //TODO: Exit loop of not keep alive
+        //TODO: Exit loop on not keep alive
         group.concurrent(runtime.io, Thread.execute, .{ &thread, &writer.interface }) catch unreachable;
     }
     group.await(runtime.io) catch unreachable;
+}
+fn log_info(connection_handle: i32, format: []const u8, args: anytype) void {
+    connection_log.info("[connection fd: {d}]" ++ format, .{connection_handle} ++ args);
+}
+fn log_err(connection_handle: i32, format: []const u8, args: anytype) void {
+    connection_log.err("[connection fd: {d}]" ++ format, .{connection_handle} ++ args);
 }
