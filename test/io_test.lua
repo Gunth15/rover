@@ -17,6 +17,7 @@ function file_create()
   rest of file]])
 
 	--TODO: Should close file when an attempt to GC is made
+	file:flush()
 	file:close()
 end
 function file_read()

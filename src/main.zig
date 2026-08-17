@@ -17,7 +17,7 @@ const HELP =
     \\Usage: rover <command> [options]
     \\
     \\Commands:
-    \\  run                 Runs a Lua program(defaults to main.lua)
+    \\  run                 Runs a Rover program(defaults to main.lua)
     \\  help                Show all commands
     \\  routes              Displays all routes
     \\
@@ -59,7 +59,7 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
     std.process.exit(status);
 }
 
-inline fn startRuntime(args: parser.Args) Runtime {
+inline fn run(args: parser.Args) !void {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer {
         if (debug_allocator.detectLeaks() != 0) {
@@ -69,6 +69,7 @@ inline fn startRuntime(args: parser.Args) Runtime {
 
     const alloc = debug_allocator.allocator();
 
+    //TODO: allow swapable io implementation for portability and versatility
     const rt = try zio.Runtime.init(alloc, .{
         .thread_pool = .{
             .max_threads = 1,
@@ -76,9 +77,9 @@ inline fn startRuntime(args: parser.Args) Runtime {
     });
     defer rt.deinit();
     const io = rt.io();
+
     if (args.help) {
         std.Io.File.stdout().writeStreamingAll(io, HELPRUN) catch {};
-        return;
     }
 
     var runtime: Runtime = try .init(
@@ -86,33 +87,22 @@ inline fn startRuntime(args: parser.Args) Runtime {
         io,
         args.read,
         args.write,
+        //TODO: Make queue_size an argument
+        250,
     );
-
-    runtime.lua.openLibs();
-    runtime.openLibRover();
-    runtime.loadMain(args.file);
-
-    //TODO: get user defined error handler
-    runtime.buildRouter();
-    runtime.runLoadFunc();
-
-    return runtime;
-}
-
-inline fn run(args: parser.Args) !void {
-    var runtime = startRuntime(args);
     defer runtime.deinit();
 
-    runtime.lua.openLibs();
+    runtime.lvm.state.openLibs();
     runtime.openLibRover();
     runtime.loadMain(args.file);
+
     //TODO: get user defined error handler
     runtime.buildRouter();
     runtime.runLoadFunc();
 
-    //TODO: make signalfd()
     try runtime.serve(args.addr);
 }
+
 inline fn help() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -141,50 +131,16 @@ inline fn routes(args: parser.Args) !void {
         return;
     }
 
-    var runtime: Runtime = undefined;
-    runtime.lua = Lua.init(.{}) catch fatal("Fatal: Could not initialize lua", .{}, 1);
+    var runtime: Runtime = try .init(&alloc, io, 0, 0, 0);
+    runtime.lvm.state.openLibs();
+    runtime.openLibRover();
     runtime.loadMain(args.file);
-    runtime.lua.openLibs();
-    runtime.buildRouter(alloc);
+    runtime.buildRouter();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
     try writer.interface.print("{s}\n", .{"─" ** 50});
 
-    print(&runtime.router.root, alloc, &writer.interface);
-}
-fn print(node: *Router.RNode, alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
-    var builder: std.ArrayList(u8) = .empty;
-    defer builder.deinit(alloc);
-
-    printNode(node, &builder, alloc, writer);
-}
-fn printNode(node: *Router.RNode, builder: *std.ArrayList(u8), alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
-    builder.appendSlice(alloc, node.path.slice()) catch {};
-    defer builder.items.len -= node.path.len();
-
-    var it = node.handles.iterator();
-    while (it.next()) |entry| {
-        const method = entry.key_ptr.*;
-        const method_col = switch (method) {
-            .GET => "\x1b[32m",
-            .POST => "\x1b[33m",
-            .PUT => "\x1b[34m",
-            .PATCH => "\x1b[36m",
-            .DELETE => "\x1b[31m",
-        };
-        const path_col = switch (node.path) {
-            .named => "\x1b[33m",
-            .catch_all => "\x1b[35m",
-            else => "",
-        };
-        writer.print("{s}{s:<10}\x1b[0m {s}{s}\x1b[0m\n", .{
-            method_col, @tagName(method),
-            path_col,   builder.items,
-        }) catch unreachable;
-    }
-    for (node.children.items) |child| {
-        printNode(child, builder, alloc, writer);
-    }
+    runtime.router.?.print(alloc, &writer.interface);
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {

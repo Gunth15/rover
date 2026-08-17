@@ -3,17 +3,17 @@ const std = @import("std");
 const linux = std.c;
 const native_os = @import("builtin").os.tag;
 
-var pressed: std.atomic.Value(false) = .init(false);
+var pressed: std.atomic.Value(bool) = .init(false);
 
 fn interrupt_handler(sig: linux.SIG) callconv(.c) void {
     switch (sig) {
-        .INT => pressed.swap(true, .release),
+        .INT => pressed.store(true, .acq_rel),
         else => {},
     }
 }
 
 pub fn isPressed() bool {
-    return pressed.load(.acq_rel);
+    return pressed.load(.monotonic);
 }
 pub fn init() void {
     switch (native_os) {

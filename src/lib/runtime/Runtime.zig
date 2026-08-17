@@ -1,6 +1,7 @@
 io: Io,
 server: ?Io.net.Server = null,
-lua: Lua,
+global_job_queue: LVM.JobQueue,
+lvm: LVM,
 router: ?Router = null,
 allocator: std.mem.Allocator,
 max_read: usize,
@@ -11,7 +12,9 @@ const route = lib.Router;
 const Parser = lib.HttpParser;
 const Io = std.Io;
 const Lua = lib.Lua;
+const LVM = @import("LuaVM.zig");
 const Router = route.Router(c_int, .{ .lua = true });
+const RequestQueue = Io.Queue(struct { writer: Io.Writer, req: Parser.Request });
 const Connection = lib.Connnection;
 const runtime_log = std.log.scoped(.runtime);
 const ctrlC = lib.Util.ctrlC;
@@ -23,10 +26,12 @@ const LibRover = @embedFile("../librover.lua");
 //NOTE: GLOBAL NEEDS TO BE ATOMIC ONT THE FUTURE
 var SHUTDOWN = false;
 
-pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write: usize) !Runtime {
+pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write: usize, job_queue_size: usize) !Runtime {
+    var queue = LVM.JobQueue.init(try alloc.alloc(LVM.Job, job_queue_size));
     return .{
         .io = io,
-        .lua = try Lua.init(.{ .allocator = alloc }),
+        .global_job_queue = queue,
+        .lvm = try .init(&queue, .{ .custom_alloc_lua = alloc }),
         .allocator = alloc.*,
         .max_read = max_read,
         .max_write = max_write,
@@ -35,7 +40,8 @@ pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write:
 pub fn deinit(r: *Runtime) void {
     if (r.server) |server| @constCast(&server).deinit(r.io);
     if (r.router) |router| @constCast(&router).deinit();
-    r.lua.deinit();
+    r.lvm.deinit();
+    r.global_job_queue.close(r.io);
 }
 
 pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
@@ -44,38 +50,39 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
     var server = r.server.?;
 
     var group: Io.Group = .init;
-    errdefer group.cancel(r.io);
+    errdefer group.cancel(io);
 
     while (!ctrlC.isPressed()) {
         const stream = try server.accept(io);
         try group.concurrent(io, Connection.handle, .{ r, stream });
     }
-
-    try group.await(r.io);
+    try group.await(io);
 }
 
 pub fn openLibRover(r: *Runtime) void {
-    r.lua.newTable();
-    r.lua.setGlobal("rover");
-    r.lua.loadString(LibRover) catch {
-        const err = r.lua.to(Lua.String, -1) catch unreachable;
+    var lua = r.lvm.state;
+    lua.newTable();
+    lua.setGlobal("rover");
+    lua.loadString(LibRover) catch {
+        const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("{s}", .{err}, 1);
     };
-    r.lua.pcall(0, 0) catch {
-        const err = r.lua.to(Lua.String, -1) catch unreachable;
+    lua.pcall(0, 0) catch {
+        const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("Error during initialization: {s}", .{err}, 1);
     };
 
-    std.debug.assert(r.lua.getGlobal("require") == .func);
-    r.lua.push("rover");
+    std.debug.assert(lua.getGlobal("require") == .func);
+    lua.push("rover");
 
-    r.lua.pcall(1, 1) catch {
-        const err = r.lua.to(Lua.String, -1) catch unreachable;
+    lua.pcall(1, 1) catch {
+        const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("Failed requiring rover: {s}", .{err}, 1);
     };
 }
 pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
-    const lua = &r.lua;
+    const lua = &r.lvm.state;
+    std.debug.assert(lua.getGlobal("rover") == .table);
     //load main file(allow user to define path to file)
     lua.loadFile(file) catch {
         const err = lua.to(Lua.String, -1) catch unreachable;
@@ -88,7 +95,7 @@ pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
 }
 
 pub fn buildRouter(r: *Runtime) void {
-    const lua = &r.lua;
+    const lua = &r.lvm.state;
 
     //find rover.routes()
     if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
@@ -120,6 +127,7 @@ pub fn buildRouter(r: *Runtime) void {
             .string => lua.to(Lua.String, -1),
             else => |ltype| fatal("First index expected to be a string but receieved a {s}", .{@tagName(ltype)}, 1),
         } catch unreachable;
+
         const accepted_methods: [5][]const u8 = .{ "GET", "POST", "PUT", "PATCH", "DELETE" };
         for (accepted_methods) |method| {
             switch (lua.getField(route_idx, method)) {
@@ -133,7 +141,7 @@ pub fn buildRouter(r: *Runtime) void {
                             route.RegistrationError.CatchAllConflict => fatal("{s} catch-all conflicts with existing routes", .{path}, 1),
                             route.RegistrationError.OutOfMemory => fatal("Out of memory", .{}, 1),
                             route.RegistrationError.UnamedWildCard => fatal("Wildcards are required to be named. {s} is not", .{path}, 1),
-                            route.RegistrationError.WildCardChildNotAllowed => fatal("{s} contains a wildcard and conflicts with existing paths", .{path}, 1),
+                            route.RegistrationError.WildCardChildNotAllowed => fatal("{s} is a child of an existing wilcard, which is not allowed", .{path}, 1),
                             route.RegistrationError.WildCardConflict => fatal("Wildcard in {s} conflicts with existing path(s)", .{path}, 1),
                             route.RegistrationError.InvalidMethod => fatal("Impossible error, method not suppported", .{}, 1),
                         }
@@ -150,7 +158,7 @@ pub fn buildRouter(r: *Runtime) void {
     }
 }
 pub fn runLoadFunc(r: *Runtime) void {
-    var lua = r.lua;
+    var lua = r.lvm.state;
 
     if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
     switch (lua.getField(-1, "load")) {
@@ -160,7 +168,7 @@ pub fn runLoadFunc(r: *Runtime) void {
                 fatal("Unexpected error from rover.load: {s}", .{err}, 1);
             };
         },
-        //Dore not exist(this is ok)
+        //Does not exist(this is ok)
         .nil => {},
         else => fatal("rover.load was not a function", .{}, 1),
     }
