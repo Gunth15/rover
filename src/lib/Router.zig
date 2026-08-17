@@ -80,13 +80,14 @@ pub fn Node(T: type) type {
         fn next(n: *Self, path: []const u8) ?*Self {
             const cidx = path[0];
             if (n.wild_child) return n.children.items[0];
-            const start_idx: usize = if (n.wild_child) 1 else 0;
+            const start_idx: usize = 0;
             for (n.indices.items[start_idx..], start_idx..) |c, i| if (cidx == c) {
                 const newpos = n.updatePrio(i);
                 return n.children.items[newpos];
             };
             return null;
         }
+        //Responsible for creating new child which is returned, doing this may create multiple nodes
         fn addChild(n: *Self, alloc: Allocator, full_path: []const u8) RegistrationError!*Self {
             var path = try alloc.dupe(u8, full_path);
             var node = n;
@@ -97,7 +98,7 @@ pub fn Node(T: type) type {
                     if (wildcard.len < 2) return RegistrationError.UnamedWildCard;
 
                     //NOTE: router does not allow /path/:bank /path/chase at this time for simplicity
-                    if (node.children.items.len > 0) return RegistrationError.WildCardChildNotAllowed;
+                    if (node.children.items.len > 0 and i == 0) return RegistrationError.WildCardChildNotAllowed;
 
                     //namespace wildcard found
                     if (wildcard[0] == ':') {
@@ -106,7 +107,7 @@ pub fn Node(T: type) type {
                             child.* = .{
                                 .path = .{ .static = path[0..i] },
                                 .priority = 1,
-                                .wild_child = true,
+                                .wild_child = false,
                                 .children = try .initCapacity(alloc, 4),
                                 .indices = try .initCapacity(alloc, 4),
                                 .handles = .init(alloc),
@@ -117,7 +118,7 @@ pub fn Node(T: type) type {
 
                             path = path[i..];
                             node = child;
-                            child = try alloc.create(Self);
+                            continue :walk;
                         }
                         //new node is named param path
                         child.* = .{
@@ -129,12 +130,12 @@ pub fn Node(T: type) type {
                             .handles = .init(alloc),
                         };
 
+                        node.wild_child = true;
                         try node.children.insert(alloc, 0, child);
 
                         if (wildcard.len < path.len) {
                             path = path[wildcard.len..];
                             node = child;
-                            node.priority += 1;
                             continue :walk;
                         }
 
@@ -142,7 +143,7 @@ pub fn Node(T: type) type {
                     }
                     //assumed to be catch-all ATP
                     if (i + wildcard.len != path.len) return RegistrationError.CatchAllIsNotTerminal;
-                    if (node.path.len() > 0 and node.path.slice()[node.path.len() - 1] == '/') return RegistrationError.CatchAllConflict;
+                    if (node.path.len() > 0 and node.path.slice()[node.path.len() - 1] != '/') return RegistrationError.CatchAllConflict;
 
                     const catch_idx = i - 1;
                     if (path[catch_idx] != '/') return RegistrationError.CatchAllIsNotTerminal;
@@ -172,23 +173,23 @@ pub fn Node(T: type) type {
                     try node.children.append(alloc, child);
 
                     return child;
-                } else {
-                    //simple add static child
-                    child.* = .{
-                        .path = .{ .static = path },
-                        .priority = 0,
-                        .wild_child = false,
-                        .children = try .initCapacity(alloc, 4),
-                        .indices = try .initCapacity(alloc, 4),
-                        .handles = .init(alloc),
-                    };
-
-                    try node.indices.append(alloc, path[0]);
-                    try node.children.append(alloc, child);
-                    return child;
-                }
+                } else break;
             }
-            unreachable;
+
+            const child = try alloc.create(Self);
+            //simple add static child
+            child.* = .{
+                .path = .{ .static = path },
+                .priority = 0,
+                .wild_child = false,
+                .children = try .initCapacity(alloc, 4),
+                .indices = try .initCapacity(alloc, 4),
+                .handles = .init(alloc),
+            };
+
+            try node.indices.append(alloc, path[0]);
+            try node.children.append(alloc, child);
+            return child;
         }
         inline fn getHandle(n: *Self, method: []const u8) SearchError!T {
             const m = Method.from(method) orelse return SearchError.InvalidMethod;
@@ -214,7 +215,7 @@ pub fn Node(T: type) type {
             }
             return npos;
         }
-        fn printNode(n: *Node(T), depth: usize) void {
+        fn debugNode(n: *Node(T), depth: usize) void {
             const kind = switch (n.path) {
                 .root => "root",
                 .static => "static",
@@ -235,7 +236,7 @@ pub fn Node(T: type) type {
                 while (it.next()) |entry| {
                     if (!first) std.debug.print(", ", .{});
                     first = false;
-                    std.debug.print("{s}", .{entry.key_ptr.*});
+                    std.debug.print("{}", .{entry.key_ptr.*});
                 }
                 std.debug.print("]", .{});
             }
@@ -244,7 +245,36 @@ pub fn Node(T: type) type {
 
             // children
             for (n.children.items) |child| {
-                child.printNode(depth + 1);
+                child.debugNode(depth + 1);
+            }
+        }
+
+        pub fn printNode(node: *Self, builder: *std.ArrayList(u8), alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
+            builder.appendSlice(alloc, node.path.slice()) catch {};
+            defer builder.items.len -= node.path.len();
+
+            var it = node.handles.iterator();
+            while (it.next()) |entry| {
+                const method = entry.key_ptr.*;
+                const method_col = switch (method) {
+                    .GET => "\x1b[32m",
+                    .POST => "\x1b[33m",
+                    .PUT => "\x1b[34m",
+                    .PATCH => "\x1b[36m",
+                    .DELETE => "\x1b[31m",
+                };
+                const path_col = switch (node.path) {
+                    .named => "\x1b[33m",
+                    .catch_all => "\x1b[35m",
+                    else => "",
+                };
+                writer.print("{s}{s:<10}\x1b[0m {s}{s}\x1b[0m\n", .{
+                    method_col, @tagName(method),
+                    path_col,   builder.items,
+                }) catch unreachable;
+            }
+            for (node.children.items) |child| {
+                printNode(child, builder, alloc, writer);
             }
         }
     };
@@ -336,7 +366,7 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
                             //make sure path conatins wildcard
                             path.len >= n.path.len() and std.mem.eql(u8, path[0..n.path.len()], n.path.slice()) and
                             //check if there is a longer wildcard
-                            (n.path.len() >= path.len or path[n.path.len()] == '/')) continue :walk else return RegistrationError.WildCardConflict;
+                            (n.path.len() <= path.len or path[n.path.len()] == '/')) continue :walk else return RegistrationError.WildCardConflict;
                     }
 
                     n = n.next(path) orelse {
@@ -406,7 +436,12 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
         }
         pub fn debugPrint(r: *Self) void {
             std.debug.print("=== ROUTER TREE ===\n", .{});
-            r.root.printNode(0);
+            r.root.debugNode(0);
+        }
+        pub fn print(r: *Self, alloc: std.mem.Allocator, writer: *std.Io.Writer) void {
+            var builder: std.ArrayList(u8) = .empty;
+            defer builder.deinit(alloc);
+            r.root.printNode(&builder, alloc, writer);
         }
     };
 }

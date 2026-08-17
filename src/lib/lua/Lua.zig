@@ -169,7 +169,7 @@ pub fn push(l: *LuaState, arg: anytype) void {
                 },
                 else => {},
             }
-            return c.lua_pushlightuserdata(l.state, arg);
+            return c.lua_pushightuserdata(l.state, arg);
         },
         else => @compileError(@typeName(ArgType) ++ " cannot be converted to lua type"),
     }
@@ -258,6 +258,17 @@ pub fn pcall(l: *LuaState, nargs: isize, nres: isize) CallError!void {
         c.LUA_ERRERR => return CallError.HandlerError,
         else => unreachable,
     }
+}
+const YieldFunction = *const fn (l: LuaState, status: usize, ctxt: *const anyopaque) c_int;
+pub fn yield(l: *LuaState, nres: isize, ctxt: *const anyopaque, function: YieldFunction) c_int {
+    const cb = struct {
+        fn continuation(l_state: *c.lua_State, c_status: c_int, c_ctxt: *const anyopaque) !c_int {
+            const lua: LuaState = .{ .state = l_state };
+            const status: usize = @intCast(c_status);
+            function(lua, status, c_ctxt);
+        }
+    };
+    return c.lua_yieldk(l, nres, ctxt, cb.continuation);
 }
 
 pub fn register(l: *LuaState, name: [:0]const u8, comptime func: *const fn (*LuaState) c_int) void {
