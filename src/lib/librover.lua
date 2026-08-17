@@ -23,9 +23,9 @@ do
 		---@field body string
 
 		---@param status number status of request
-		---@param headers table|nil optionale headers
 		---@param bytes string bytes to transfer
-		function M.send_bytes(status, headers, bytes)
+		---@param headers table|nil optionale headers
+		function M:send_bytes(status, bytes, headers)
 			local h = headers or {}
 			h["Content-Length"] = string.len(bytes)
 			return {

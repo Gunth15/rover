@@ -18,11 +18,11 @@ pub const Thread = struct {
 
 const VMFunc = *const fn (*Thread, userdata: *anyopaque) void;
 fn run(lvm: *LVM, io: std.Io) void {
-    const buff: [100]Job = .{};
+    var buff: [100]Job = undefined;
     while (true) {
-        const jobs = lvm.job_queue.get(io, &buff, 1) catch break;
+        const jobs = lvm.job_queue.get(io, &buff, 1) catch @panic("WTD");
         const available_jobs = buff[0..jobs];
-        for (available_jobs) |job| job.run(job.thread);
+        for (available_jobs) |job| job.run(@constCast(&job.thread), job.userdata);
     }
 }
 const Options = struct {
@@ -34,11 +34,13 @@ pub fn init(queue: *JobQueue, opts: Options) !LVM {
         .state = try Lua.init(.{ .allocator = opts.custom_alloc_lua }),
     };
 }
-pub fn deinit(lvm: *LVM) void {
-    lvm.deinit();
+pub fn deinit(lvm: *LVM, io: std.Io) void {
+    lvm.state.deinit();
+    lvm.job_queue.close(io);
 }
-pub fn start(lvm: *LVM, io: std.Io) std.Io.ConcurrentError!void {
-    try io.concurrent(run, .{ lvm, io });
+pub fn start(lvm: *LVM, io: std.Io) std.Io.ConcurrentError!std.Io.Future(void) {
+    //TODO: HAndle future
+    return try io.concurrent(run, .{ lvm, io });
 }
 pub fn enqueue(lvm: *LVM, io: std.Io, job: []Job, min: usize) !void {
     try lvm.job_queue.put(io, job, min);

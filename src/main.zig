@@ -70,13 +70,16 @@ inline fn run(args: parser.Args) !void {
     const alloc = debug_allocator.allocator();
 
     //TODO: allow swapable io implementation for portability and versatility
-    const rt = try zio.Runtime.init(alloc, .{
-        .thread_pool = .{
-            .max_threads = 1,
-        },
-    });
-    defer rt.deinit();
-    const io = rt.io();
+    //const rt = try zio.Runtime.init(alloc, .{
+    //    .thread_pool = .{
+    //        .max_threads = 1,
+    //},
+    //});
+    //defer rt.deinit();
+    //const io = rt.io();
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
     if (args.help) {
         std.Io.File.stdout().writeStreamingAll(io, HELPRUN) catch {};
@@ -91,6 +94,7 @@ inline fn run(args: parser.Args) !void {
         250,
     );
     defer runtime.deinit();
+    try runtime.initVm();
 
     runtime.lvm.state.openLibs();
     runtime.openLibRover();
@@ -98,7 +102,12 @@ inline fn run(args: parser.Args) !void {
 
     //TODO: get user defined error handler
     runtime.buildRouter();
+    const not_found_func = runtime.runOnNotFoundFunc();
+    runtime.router.?.not_found_handler = not_found_func;
+    runtime.router.?.invalid_method_handler = not_found_func;
     runtime.runLoadFunc();
+
+    _ = try runtime.lvm.start(io);
 
     try runtime.serve(args.addr);
 }

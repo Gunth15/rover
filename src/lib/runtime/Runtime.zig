@@ -27,11 +27,10 @@ const LibRover = @embedFile("../librover.lua");
 var SHUTDOWN = false;
 
 pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write: usize, job_queue_size: usize) !Runtime {
-    var queue = LVM.JobQueue.init(try alloc.alloc(LVM.Job, job_queue_size));
-    return .{
+    return Runtime{
         .io = io,
-        .global_job_queue = queue,
-        .lvm = try .init(&queue, .{ .custom_alloc_lua = alloc }),
+        .global_job_queue = LVM.JobQueue.init(try alloc.alloc(LVM.Job, job_queue_size)),
+        .lvm = undefined,
         .allocator = alloc.*,
         .max_read = max_read,
         .max_write = max_write,
@@ -40,10 +39,13 @@ pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write:
 pub fn deinit(r: *Runtime) void {
     if (r.server) |server| @constCast(&server).deinit(r.io);
     if (r.router) |router| @constCast(&router).deinit();
-    r.lvm.deinit();
-    r.global_job_queue.close(r.io);
+    r.lvm.deinit(r.io);
+    r.allocator.free(r.global_job_queue.type_erased.buffer);
 }
 
+pub fn initVm(r: *Runtime) !void {
+    r.lvm = try .init(&r.global_job_queue, .{ .custom_alloc_lua = &r.allocator });
+}
 pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
     const io: Io = r.io;
     r.server = try addr.listen(io, .{ .reuse_address = true });
@@ -171,6 +173,27 @@ pub fn runLoadFunc(r: *Runtime) void {
         //Does not exist(this is ok)
         .nil => {},
         else => fatal("rover.load was not a function", .{}, 1),
+    }
+}
+pub fn runOnNotFoundFunc(r: *Runtime) c_int {
+    var lua = r.lvm.state;
+
+    if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
+    switch (lua.getField(-1, "on_not_found")) {
+        .func => return lua.ref(),
+        //Does not exist(this is ok)
+        .nil => {
+            lua.doString(
+                \\return function(conn)
+                \\return conn:send_bytes(404,"Page not found")
+                \\end
+            ) catch {
+                const err = lua.to(Lua.String, -1) catch unreachable;
+                fatal("Unexpected error from rover.on_not_found: {s}", .{err}, 1);
+            };
+            return lua.ref();
+        },
+        else => fatal("rover.on_not_found was not a function", .{}, 1),
     }
 }
 
