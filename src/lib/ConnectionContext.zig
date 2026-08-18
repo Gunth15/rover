@@ -170,13 +170,11 @@ pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
             .runtime = runtime,
             .stream = stream,
         };
-        std.debug.print("Enquing job\n", .{});
         runtime.lvm.enqueueOne(runtime.io, .{
             .run = luaConnectionHandler,
             .userdata = @ptrCast(@alignCast(ctxt)),
             .thread = runtime.lvm.mainThread(),
         }) catch |e| @panic(@errorName(e));
-        std.debug.print("Done job\n", .{});
     }
 }
 fn log_info(connection_handle: i32, comptime format: []const u8, args: anytype) void {
