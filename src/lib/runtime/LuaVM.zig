@@ -19,8 +19,8 @@ pub const Thread = struct {
 const VMFunc = *const fn (*Thread, userdata: *anyopaque) void;
 fn run(lvm: *LVM, io: std.Io) void {
     var buff: [100]Job = undefined;
-    while (true) {
-        const jobs = lvm.job_queue.get(io, &buff, 1) catch @panic("WTD");
+    while (!lib.Util.ctrlC.isPressed()) {
+        const jobs = lvm.job_queue.get(io, &buff, 1) catch break;
         const available_jobs = buff[0..jobs];
         for (available_jobs) |job| job.run(@constCast(&job.thread), job.userdata);
     }

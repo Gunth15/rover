@@ -169,7 +169,7 @@ pub fn push(l: *LuaState, arg: anytype) void {
                 },
                 else => {},
             }
-            return c.lua_pushightuserdata(l.state, arg);
+            return c.lua_pushlightuserdata(l.state, arg);
         },
         else => @compileError(@typeName(ArgType) ++ " cannot be converted to lua type"),
     }

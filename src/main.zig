@@ -60,6 +60,8 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
 }
 
 inline fn run(args: parser.Args) !void {
+    lib.Util.ctrlC.init();
+
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer {
         if (debug_allocator.detectLeaks() != 0) {
@@ -107,9 +109,11 @@ inline fn run(args: parser.Args) !void {
     runtime.router.?.invalid_method_handler = not_found_func;
     runtime.runLoadFunc();
 
-    _ = try runtime.lvm.start(io);
+    var fut = try runtime.lvm.start(io);
+    errdefer fut.cancel(io);
 
     try runtime.serve(args.addr);
+    fut.await(io);
 }
 
 inline fn help() !void {

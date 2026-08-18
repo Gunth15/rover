@@ -37,10 +37,10 @@ pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write:
     };
 }
 pub fn deinit(r: *Runtime) void {
-    if (r.server) |server| @constCast(&server).deinit(r.io);
-    if (r.router) |router| @constCast(&router).deinit();
+    if (r.server) |*server| server.deinit(r.io);
+    if (r.router) |*router| router.deinit();
     r.lvm.deinit(r.io);
-    r.allocator.free(r.global_job_queue.type_erased.buffer);
+    r.allocator.free(@as([]LVM.Job, @ptrCast(@alignCast(r.global_job_queue.type_erased.buffer))));
 }
 
 pub fn initVm(r: *Runtime) !void {
@@ -63,6 +63,10 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
 
 pub fn openLibRover(r: *Runtime) void {
     var lua = r.lvm.state;
+
+    lua.push(r);
+    lua.setField(Lua.RegistryIndex, "rover_runtime");
+
     lua.newTable();
     lua.setGlobal("rover");
     lua.loadString(LibRover) catch {

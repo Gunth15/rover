@@ -7,7 +7,7 @@ var pressed: std.atomic.Value(bool) = .init(false);
 
 fn interrupt_handler(sig: linux.SIG) callconv(.c) void {
     switch (sig) {
-        .INT => pressed.store(true, .acq_rel),
+        .INT => pressed.store(true, .release),
         else => {},
     }
 }
@@ -15,18 +15,20 @@ fn interrupt_handler(sig: linux.SIG) callconv(.c) void {
 pub fn isPressed() bool {
     return pressed.load(.monotonic);
 }
+
 pub fn init() void {
     switch (native_os) {
         .windows => @compileError("Ctrl-c not implemented yet lol."),
         else => {
+            var set: linux.sigset_t = undefined;
+            _ = linux.sigemptyset(&set);
+
             const act: linux.Sigaction = .{
                 .flags = 0,
-                .handler = .{
-                    &interrupt_handler,
-                },
-                .mask = @splat(0),
+                .handler = .{ .handler = interrupt_handler },
+                .mask = set,
             };
-            linux.sigaction(.INT, &act, null);
+            _ = linux.sigaction(.INT, &act, null);
         },
     }
 }
