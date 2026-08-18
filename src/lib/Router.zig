@@ -408,7 +408,7 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
                     .named => |edge| {
                         var iter = std.mem.splitAny(u8, path, "/");
                         const value = iter.first();
-                        try putfn.put(assigns, edge[1..], path);
+                        try putfn.put(assigns, edge[1..], value);
                         try prefix.appendSlice(alloc, value);
                     },
                     .root, .static => |edge| try prefix.appendSlice(alloc, edge),
@@ -424,7 +424,7 @@ pub fn Router(T: type, comptime opts: RouterOptions) type {
                     }
                 }
 
-                path = path[prefix.items.len..];
+                path = full_path[prefix.items.len..];
 
                 //Go deeper
                 n = n.next(path) orelse {

@@ -16,12 +16,13 @@ const State = union(enum) {
     line_comment,
     begin_bracket: u8, //level
     end_bracket: usize, //level
+    end_of_text,
 };
 
 fn peekState(state: State, r: *Io.Reader) !State {
     switch (state) {
         .text => {
-            const delim = try r.peek(3);
+            const delim = r.peek(3) catch |e| return if (e == error.EndOfStream) .end_of_text else e;
             if (std.mem.eql(u8, delim, "<% ") or std.mem.eql(u8, delim, "<%=")) return .begin_inline;
             return .text;
         },
@@ -82,18 +83,16 @@ fn peekState(state: State, r: *Io.Reader) !State {
             if (level == 0 and pb == ']') return .lua;
             return .{ .end_bracket = level };
         },
+        .end_of_text => return .end_of_text,
     }
 }
 
-pub fn compile(name: []const u8, r: *Io.Reader, w: *Io.Writer) !void {
-    try w.print("function {s}(context)\n", .{name});
+pub fn compile(r: *Io.Reader, w: *Io.Writer) !void {
+    try w.print("return function (context)\n", .{});
     try w.writeAll("\tlocal list = {}\n");
     try w.writeAll("\tlist[#list+1] = [===[\n");
 
-    var state: State = peekState(.text, r) catch |e| switch (e) {
-        error.EndOfStream => return,
-        else => return e,
-    };
+    var state: State = try peekState(.text, r);
     while (true) {
         switch (state) {
             .expr => {
@@ -108,7 +107,7 @@ pub fn compile(name: []const u8, r: *Io.Reader, w: *Io.Writer) !void {
                 try w.writeByte('\t');
                 r.toss(3);
             },
-            .begin_inline => try w.writeAll("\t]===]\n"),
+            .begin_inline => try w.writeAll("]===]\n"),
             .end_inline => {
                 try w.writeByte('\n');
                 try w.writeAll("\tlist[#list+1] = [===[\n");
@@ -116,18 +115,13 @@ pub fn compile(name: []const u8, r: *Io.Reader, w: *Io.Writer) !void {
             },
             .line_comment_start => try r.streamExact(w, 2),
             .text, .lua, .string, .string_escape, .line_comment, .begin_bracket, .end_bracket => try r.streamExact(w, 1),
-        }
-        state = peekState(state, r) catch |e| switch (e) {
-            error.EndOfStream => {
-                if (state == .text) {
-                    //TODO: make end of text a new state
-                    try r.streamExact(w, 1);
-                    try w.writeAll("\t]===]\n");
-                }
+            .end_of_text => {
+                _ = try r.stream(w, .limited(3));
+                try w.writeAll("]===]\n");
                 break;
             },
-            else => return e,
-        };
+        }
+        state = try peekState(state, r);
     }
     try w.writeAll("\treturn table.concat(list,\"\")\n");
     try w.writeAll("end\n");

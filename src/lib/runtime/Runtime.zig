@@ -85,6 +85,8 @@ pub fn openLibRover(r: *Runtime) void {
         const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("Failed requiring rover: {s}", .{err}, 1);
     };
+
+    lib.LuaLibs.addLibs(&r.lvm.state);
 }
 pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
     const lua = &r.lvm.state;

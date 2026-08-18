@@ -10,7 +10,6 @@ local plugins = rover.plugins
 local controllers = require("controllers")
 function rover.load()
 	print("moon rover started at", tostring(os.time()))
-	--TODO: maybe make global state update all vm's somehow(shared dict)
 end
 function rover.plugs()
 	--TODO: add content type blockers

@@ -6,6 +6,7 @@ pub const Runtime = @import("runtime/Runtime.zig");
 pub const Connnection = @import("ConnectionContext.zig");
 pub const Engine = @import("engine.zig");
 pub const LTest = @import("Ltest.zig");
+pub const LuaLibs = @import("lua_libs/lua_libs.zig");
 test {
     _ = @import("lua_libs/lua_libs.zig");
     _ = @import("util/util.zig");
