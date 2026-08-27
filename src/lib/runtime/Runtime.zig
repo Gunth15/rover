@@ -20,11 +20,9 @@ const runtime_log = std.log.scoped(.runtime);
 const ctrlC = lib.Util.ctrlC;
 
 pub const Thread = @import("LuaThread.zig");
+pub const Logger = @import("Logger.zig");
 const Runtime = @This();
 const LibRover = @embedFile("../librover.lua");
-
-//NOTE: GLOBAL NEEDS TO BE ATOMIC ONT THE FUTURE
-var SHUTDOWN = false;
 
 pub fn init(alloc: *const std.mem.Allocator, io: Io, max_read: usize, max_write: usize, job_queue_size: usize) !Runtime {
     return Runtime{
@@ -56,7 +54,7 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
 
     while (!ctrlC.isPressed()) {
         const stream = try server.accept(io);
-        try group.concurrent(io, Connection.handle, .{ r, stream });
+        try group.concurrent(io, Connection.drain, .{ r, stream });
     }
     try group.await(io);
 }
