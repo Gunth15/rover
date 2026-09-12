@@ -96,24 +96,34 @@ inline fn run(args: parser.Args) !void {
         250,
     );
     defer runtime.deinit();
+
     try runtime.initVm();
 
-    runtime.lvm.state.openLibs();
+    runtime.lvm.main_thread.state.openLibs();
     runtime.openLibRover();
     runtime.loadMain(args.file);
 
+    try Runtime.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .TRACE });
+    defer Runtime.Logger.Instance.deinit();
+
     //TODO: get user defined error handler
     runtime.buildRouter();
+    runtime.findOrSetOnError();
     const not_found_func = runtime.runOnNotFoundFunc();
     runtime.router.?.not_found_handler = not_found_func;
     runtime.router.?.invalid_method_handler = not_found_func;
     runtime.runLoadFunc();
 
-    var fut = try runtime.lvm.start(io);
-    errdefer fut.cancel(io);
+    var lvm_fut = try runtime.lvm.start(io);
+    var logger_fut = try Runtime.Logger.Instance.start();
+    errdefer {
+        lvm_fut.cancel(io);
+        logger_fut.cancel(io);
+    }
 
     try runtime.serve(args.addr);
-    fut.await(io);
+    lvm_fut.cancel(io);
+    logger_fut.cancel(io);
 }
 
 inline fn help() !void {
@@ -145,7 +155,7 @@ inline fn routes(args: parser.Args) !void {
     }
 
     var runtime: Runtime = try .init(&alloc, io, 0, 0, 0);
-    runtime.lvm.state.openLibs();
+    runtime.lvm.main_thread.state.openLibs();
     runtime.openLibRover();
     runtime.loadMain(args.file);
     runtime.buildRouter();

@@ -37,6 +37,10 @@ function rover.routes(plug)
 	}
 end
 
-function rover.onerror(conn, err)
-	print("bruh")
+function rover.on_error(err)
+	print(err)
+	return {
+		status = 500,
+		headers = {},
+	}
 end

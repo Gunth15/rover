@@ -1,9 +1,7 @@
 --rover test command (searches in test directory for files with *_test naming convention or you can specify the file to look for using the f flag)
 function rover.test(core)
-	-- Isolate test to separate lua runtimes
-	core.run(file_create)
-	core.run(file_read)
-	core.run(tmp)
+	core:run(file_create)
+	core:run(file_read)
 end
 
 function file_create()

@@ -13,11 +13,20 @@ function rover.routes()
 		{ "/", GET = Hello },
 		{ "/add", GET = Add },
 		{ "/name/:name", GET = Name },
+		{ "/error", GET = Error },
 	}
 end
 
 function Hello(conn)
-	return conn:send_bytes(200, "<h1>Welcome</h1>", {})
+	local file = coroutine.yield(5, "file.txt", { read = true })
+	file = coroutine.yield(2, file, "Hello from rover!")
+	coroutine.yield(6, file)
+	coroutine.yield(3, file)
+	return conn:send_bytes(200, "<h1>Welcome</h1>\r\n", {})
+end
+
+function Error(_)
+	error("FUCK YOU")
 end
 
 function Add(conn)

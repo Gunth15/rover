@@ -60,7 +60,7 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
 }
 
 pub fn openLibRover(r: *Runtime) void {
-    var lua = r.lvm.state;
+    var lua = r.lvm.main_thread.state;
 
     lua.push(r);
     lua.setField(Lua.RegistryIndex, "rover_runtime");
@@ -84,10 +84,10 @@ pub fn openLibRover(r: *Runtime) void {
         fatal("Failed requiring rover: {s}", .{err}, 1);
     };
 
-    lib.LuaLibs.addLibs(&r.lvm.state);
+    lib.LuaLibs.addLibs(&r.lvm.main_thread.state);
 }
 pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
-    const lua = &r.lvm.state;
+    const lua = &r.lvm.main_thread.state;
     std.debug.assert(lua.getGlobal("rover") == .table);
     //load main file(allow user to define path to file)
     lua.loadFile(file) catch {
@@ -101,7 +101,7 @@ pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
 }
 
 pub fn buildRouter(r: *Runtime) void {
-    const lua = &r.lvm.state;
+    const lua = &r.lvm.main_thread.state;
 
     //find rover.routes()
     if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
@@ -164,7 +164,7 @@ pub fn buildRouter(r: *Runtime) void {
     }
 }
 pub fn runLoadFunc(r: *Runtime) void {
-    var lua = r.lvm.state;
+    var lua = r.lvm.main_thread.state;
 
     if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
     switch (lua.getField(-1, "load")) {
@@ -180,7 +180,7 @@ pub fn runLoadFunc(r: *Runtime) void {
     }
 }
 pub fn runOnNotFoundFunc(r: *Runtime) c_int {
-    var lua = r.lvm.state;
+    var lua = r.lvm.main_thread.state;
 
     if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
     switch (lua.getField(-1, "on_not_found")) {
@@ -199,6 +199,89 @@ pub fn runOnNotFoundFunc(r: *Runtime) c_int {
         },
         else => fatal("rover.on_not_found was not a function", .{}, 1),
     }
+}
+pub fn findOrSetOnError(r: *Runtime) void {
+    var lua = r.lvm.main_thread.state;
+
+    if (lua.getGlobal("rover") != .table) @panic("rover could not be found");
+    switch (lua.getField(-1, "on_error")) {
+        .func => return,
+        //Does not exist(this is ok)
+        .nil => {
+            lua.doString(
+                \\return function(err)
+                \\print(err)
+                \\return {
+                \\  status = 500,
+                \\  headers = {
+                \\      ["Content-Length"] = 21,
+                \\  },
+                \\  body = "Internal Server Error",
+                \\}
+                \\end
+            ) catch {
+                const err = lua.to(Lua.String, -1) catch unreachable;
+                fatal("Unexpected error from rover.on_not_found: {s}", .{err}, 1);
+            };
+            lua.setField(-3, "on_error");
+        },
+        else => fatal("rover.on_error was not a function", .{}, 1),
+    }
+}
+pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
+    const io = r.io;
+    const test_dir = try Io.Dir.cwd().openDir(io, test_dir_path, .{ .iterate = true });
+    r.initVm();
+    r.openLibRover();
+
+    const iter = test_dir.iterate();
+    while (try iter.next(r.io)) |entry| {
+        switch (entry.kind) {
+            .file => {
+                var buff: [256]u8 = undefined;
+                const len = try test_dir.realPathFile(io, entry.name, &buff);
+
+                const file_name = try r.allocator.dupeZ(u8, buff[0..len]);
+                defer r.allocator.free(file_name);
+
+                const list: std.ArrayList(c_int) = .empty;
+                defer list.deinit(r.allocator);
+
+                const lua = try Lua.init(.{ .allocator = r.allocator });
+                defer lua.deinit();
+
+                try lua.doFile(file_name);
+
+                if (lua.getGlobal("rover") != .table) @panic("TODO: ERROR");
+                if (lua.getField(-1, "test") != .func) @panic("TODO: ERROR");
+
+                const core_file = @embedFile("testing/core.lua");
+                try lua.doString(core_file);
+
+                lua.push(null);
+                while (lua.Next(1) != .nil) {
+                    if (lua.Luatype(-1) != .table) @panic("TODO: Error");
+                    const table_idx = lua.getAbs(-1);
+
+                    if (lua.getField(table_idx, "name") != .string) @panic("TODO: Error");
+                    const func_name = try lua.to(Lua.String, -1);
+
+                    if (lua.getField(table_idx, "func") != .func) @panic("TODO: Error");
+
+                    lua.pcall(1, 0) catch {
+                        const err = try lua.to(u8, -1);
+                        std.debug.print("Test function {s} failed: {s}", .{ func_name, err });
+                    };
+                }
+            },
+            else => continue,
+        }
+    }
+
+    const lvm_fut = try r.lvm.start(io);
+    errdefer lvm_fut.cancel(io);
+
+    lvm_fut.await(io);
 }
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {

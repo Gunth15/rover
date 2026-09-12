@@ -6,6 +6,7 @@ const Logger = &Runtime.Logger.Instance;
 const Io = std.Io;
 const Lua = lib.Lua;
 const LVM = @import("runtime/LuaVM.zig");
+const operations = @import("runtime/operation.zig");
 const Parser = lib.HttpParser;
 const EventQueue = lib.Util.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
@@ -15,7 +16,7 @@ const Writer = lib.Util.Writer;
 const RequestQueue = Io.Queue(struct { writer: Io.Writer, req: Parser.Request });
 const connection_log = std.log.scoped(.connection);
 
-const Context = struct {
+pub const Context = struct {
     runtime: *Runtime,
     req: HttpParser.Request,
     stream: Io.net.Stream,
@@ -67,48 +68,36 @@ pub fn execute(thread: *LVM.Thread, ctxt: *Context) void {
     var lua = thread.state;
     var nresults: usize = 0;
     switch (lua.resumeT(null, 1, &nresults) catch {
-        const err = lua.to(Lua.String, -1) catch unreachable;
-        @panic(err);
+        const err_ptr = lua.getAbs(-1);
+        std.debug.assert(lua.getGlobal("rover") == .table);
+        std.debug.assert(lua.getField(-1, "on_error") == .func);
+        lua.insert(err_ptr);
+        lua.pop(1);
+        lua.pcall(1, 1) catch {
+            const err = lua.to(Lua.String, -1) catch unreachable;
+            @panic(err);
+        };
+        defer {
+            lua.unref(thread.ref);
+            ctxt.arena.deinit();
+        }
+        return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
     }) {
         .OK => {
             defer {
                 lua.unref(thread.ref);
                 ctxt.arena.deinit();
             }
-
-            var sw = ctxt.stream.writer(runtime.io, ctxt.arena.allocator().alloc(u8, runtime.max_write) catch |e| return connection_log.err("{any}", .{e}));
-            var writer = &sw.interface;
             std.debug.assert(nresults == 1);
-            var l = &lua;
-
-            const ret_table = l.getTop();
-            std.debug.assert(l.getField(ret_table, "status") == .number);
-            const status = l.to(Lua.Integer, -1) catch unreachable;
-            writer.print("HTTP/1.1 {d} TODO\r\n", .{status}) catch unreachable;
-
-            std.debug.assert(l.getField(ret_table, "headers") == .table);
-            l.push(null);
-            while (l.Next(-2) != .nil) {
-                const key = l.to(Lua.String, -2) catch unreachable;
-                const value = l.to(Lua.String, -1) catch unreachable;
-                l.pop(1);
-                writer.print("{s}:{s}\r\n", .{ key, value }) catch unreachable;
-            }
-
-            _ = writer.write("\r\n") catch unreachable;
-
-            if (l.getField(ret_table, "body") == .string) {
-                const body = l.to(Lua.String, -1) catch unreachable;
-                _ = writer.write(body) catch unreachable;
-            }
-
-            writer.flush() catch unreachable;
+            return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
         },
         .YIELDED => {
-            //NOTE: Whatever function yielded is expeted to know how to also resume the function
+            const op = operations.Operation.decode(&lua, runtime.allocator, nresults) catch @panic("TODO: handle errors");
+            op.dispatch(ctxt, thread.*);
         },
     }
 }
+
 pub fn luaConnectionHandler(thread: *LVM.Thread, userdata: *anyopaque) void {
     const ctxt: *Context = @ptrCast(@alignCast(userdata));
     const runtime = ctxt.runtime;
@@ -178,7 +167,35 @@ pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
         runtime.lvm.enqueueOne(runtime.io, .{
             .run = luaConnectionHandler,
             .userdata = @ptrCast(@alignCast(ctxt)),
-            .thread = runtime.lvm.mainThread(),
+            .thread = runtime.lvm.main_thread,
         }) catch |e| @panic(@errorName(e));
     }
+}
+fn streamResponseTable(io: Io, lua: *Lua, ctxt: *Context, max_write: usize) void {
+    var l = lua;
+    var sw = ctxt.stream.writer(io, ctxt.arena.allocator().alloc(u8, max_write) catch |e| return connection_log.err("{any}", .{e}));
+    var writer = &sw.interface;
+
+    const ret_table = l.getTop();
+    std.debug.assert(l.getField(ret_table, "status") == .number);
+    const status = l.to(Lua.Integer, -1) catch unreachable;
+    writer.print("HTTP/1.1 {d} TODO\r\n", .{status}) catch unreachable;
+
+    std.debug.assert(l.getField(ret_table, "headers") == .table);
+    l.push(null);
+    while (l.Next(-2) != .nil) {
+        const key = l.to(Lua.String, -2) catch unreachable;
+        const value = l.to(Lua.String, -1) catch unreachable;
+        l.pop(1);
+        writer.print("{s}:{s}\r\n", .{ key, value }) catch unreachable;
+    }
+
+    _ = writer.write("\r\n") catch unreachable;
+
+    if (l.getField(ret_table, "body") == .string) {
+        const body = l.to(Lua.String, -1) catch unreachable;
+        _ = writer.write(body) catch unreachable;
+    }
+
+    writer.flush() catch unreachable;
 }
