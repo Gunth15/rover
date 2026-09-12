@@ -471,7 +471,7 @@ pub fn setGlobal(l: *LuaState, name: [:0]const u8) void {
 }
 
 pub fn toUserData(l: *LuaState, T: type, index: isize) *T {
-    return @ptrCast(c.lua_touserdata(l.state, @as(c_int, index)));
+    return @ptrCast(@alignCast(c.lua_touserdata(l.state, @as(c_int, @intCast(index)))));
 }
 pub fn checkStack(l: *LuaState, extra: usize) bool {
     return c.lua_checkstack(l.state, extra) != 0;
