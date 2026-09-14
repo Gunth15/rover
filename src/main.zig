@@ -20,6 +20,7 @@ const HELP =
     \\  run                 Runs a Rover program(defaults to main.lua)
     \\  help                Show all commands
     \\  routes              Displays all routes
+    \\  tests               Runs test out of the test directory(defaults to ./test)
     \\
 ;
 const HELPRUN =
@@ -53,6 +54,29 @@ const HELPROUTES =
     \\  -h, --help                Show this help message
     \\
 ;
+
+const HELPTEST =
+    \\Rover 0.0.1
+    \\Cameron W.
+    \\
+    \\Usage:
+    \\  rover tests [options]
+    \\
+    \\Options:
+    \\  -d, --dir <dir>         Directory to look for test
+    \\  -h, --help              Show this help message
+    \\
+;
+
+pub fn main(init: std.process.Init.Minimal) !void {
+    const args = parser.parse(init.args);
+    switch (args.command) {
+        .help => return help(),
+        .run => return run(args),
+        .routes => return routes(args),
+        .tests => return tests(args),
+    }
+}
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
     main_log.err(fmt, args);
@@ -166,11 +190,22 @@ inline fn routes(args: parser.Args) !void {
     runtime.router.?.print(alloc, &writer.interface);
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    const args = parser.parse(init.args);
-    switch (args.command) {
-        .help => return help(),
-        .run => return run(args),
-        .routes => return routes(args),
+inline fn tests(args: parser.Args) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    const io = threaded.io();
+
+    var writer = std.Io.File.stdout().writer(io, try alloc.alloc(u8, 4096));
+    defer writer.flush() catch {};
+
+    if (args.help) {
+        _ = writer.interface.write(HELPTEST) catch {};
+        return;
     }
+
+    var runtime: Runtime = try .init(&alloc, io, 0, 0, 256);
+    try runtime.runTestMode(args.file);
 }

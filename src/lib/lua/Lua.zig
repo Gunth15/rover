@@ -282,8 +282,15 @@ pub fn openLibs(l: *LuaState) void {
 pub fn pushValue(l: *LuaState, idx: isize) void {
     return c.lua_pushvalue(l.state, @intCast(idx));
 }
+pub fn rotate(l: *LuaState, from: i64, to_idx: i64) void {
+    return c.lua_rotate(l.state, @intCast(from), @intCast(to_idx));
+}
 pub fn insert(l: *LuaState, n: i64) void {
-    return c.lua_rotate(l.state, @intCast(n), 1);
+    return l.rotate(@intCast(n), 1);
+}
+pub fn remove(l: *LuaState, idx: i64) void {
+    const c_idx: c_int = @intCast(idx);
+    return c.lua_remove(l.state, c_idx);
 }
 
 //pops n values form the stack

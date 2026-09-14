@@ -2,7 +2,7 @@ const std = @import("std");
 const parser_log = @import("std").log.scoped(.parser);
 
 pub const Args = struct {
-    command: enum { run, help, routes } = .help,
+    command: enum { run, help, routes, tests } = .help,
     file: [:0]const u8 = "main.lua",
     help: bool = false,
     connections: usize = 500,
@@ -23,6 +23,8 @@ pub fn parse(cargs: std.process.Args) Args {
         args.command = .run;
     } else if (std.mem.eql(u8, "routes", command)) {
         args.command = .routes;
+    } else if (std.mem.eql(u8, "tests", command)) {
+        args.command = .tests;
     } else {
         parser_log.err("Unknown command: {s}\n", .{command});
         return args;
@@ -63,6 +65,12 @@ pub fn parse(cargs: std.process.Args) Args {
                 } else if (isarg(flag, "-h", "--help")) {
                     args.help = true;
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
+            },
+            .tests => {
+                args.file = "tests";
+                if (isarg(flag, "-d", "--dir")) args.file = iter.next() orelse {
+                    return parseErr(args, "No directory specified\n", .{});
+                };
             },
         }
     }

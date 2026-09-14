@@ -18,6 +18,7 @@ const RequestQueue = Io.Queue(struct { writer: Io.Writer, req: Parser.Request })
 const Connection = lib.Connnection;
 const runtime_log = std.log.scoped(.runtime);
 const ctrlC = lib.Util.ctrlC;
+const testing = @import("testing/testing.zig");
 
 pub const Thread = @import("LuaThread.zig");
 pub const Logger = @import("Logger.zig");
@@ -61,7 +62,9 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
 
 pub fn openLibRover(r: *Runtime) void {
     var lua = r.lvm.main_thread.state;
-
+    r.openLibRoverNoLVM(&lua);
+}
+pub fn openLibRoverNoLVM(r: *Runtime, lua: *Lua) void {
     lua.push(r);
     lua.setField(Lua.RegistryIndex, "rover_runtime");
 
@@ -84,7 +87,7 @@ pub fn openLibRover(r: *Runtime) void {
         fatal("Failed requiring rover: {s}", .{err}, 1);
     };
 
-    lib.LuaLibs.addLibs(&r.lvm.main_thread.state);
+    lib.LuaLibs.addLibs(lua);
 }
 pub fn loadMain(r: *Runtime, file: [:0]const u8) void {
     const lua = &r.lvm.main_thread.state;
@@ -229,59 +232,7 @@ pub fn findOrSetOnError(r: *Runtime) void {
     }
 }
 pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
-    const io = r.io;
-    const test_dir = try Io.Dir.cwd().openDir(io, test_dir_path, .{ .iterate = true });
-    r.initVm();
-    r.openLibRover();
-
-    const iter = test_dir.iterate();
-    while (try iter.next(r.io)) |entry| {
-        switch (entry.kind) {
-            .file => {
-                var buff: [256]u8 = undefined;
-                const len = try test_dir.realPathFile(io, entry.name, &buff);
-
-                const file_name = try r.allocator.dupeZ(u8, buff[0..len]);
-                defer r.allocator.free(file_name);
-
-                const list: std.ArrayList(c_int) = .empty;
-                defer list.deinit(r.allocator);
-
-                const lua = try Lua.init(.{ .allocator = r.allocator });
-                defer lua.deinit();
-
-                try lua.doFile(file_name);
-
-                if (lua.getGlobal("rover") != .table) @panic("TODO: ERROR");
-                if (lua.getField(-1, "test") != .func) @panic("TODO: ERROR");
-
-                const core_file = @embedFile("testing/core.lua");
-                try lua.doString(core_file);
-
-                lua.push(null);
-                while (lua.Next(1) != .nil) {
-                    if (lua.Luatype(-1) != .table) @panic("TODO: Error");
-                    const table_idx = lua.getAbs(-1);
-
-                    if (lua.getField(table_idx, "name") != .string) @panic("TODO: Error");
-                    const func_name = try lua.to(Lua.String, -1);
-
-                    if (lua.getField(table_idx, "func") != .func) @panic("TODO: Error");
-
-                    lua.pcall(1, 0) catch {
-                        const err = try lua.to(u8, -1);
-                        std.debug.print("Test function {s} failed: {s}", .{ func_name, err });
-                    };
-                }
-            },
-            else => continue,
-        }
-    }
-
-    const lvm_fut = try r.lvm.start(io);
-    errdefer lvm_fut.cancel(io);
-
-    lvm_fut.await(io);
+    try testing.runTestMode(r, test_dir_path);
 }
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {

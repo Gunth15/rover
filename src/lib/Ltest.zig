@@ -6,27 +6,19 @@ const Runtime = lib.Runtime;
 const testing = std.testing;
 
 runtime: Runtime,
-zio_rt: *zio.Runtime,
 
 const Ltest = @This();
 pub fn init() !Ltest {
-    const rt = try zio.Runtime.init(testing.allocator, .{
-        .thread_pool = .{
-            .max_threads = 1,
-        },
-    });
     return .{
-        .runtime = try .init(&testing.allocator, rt.io(), 4096, 4096),
-        .zio_rt = rt,
+        .runtime = try .init(&testing.allocator, std.testing.io, 4096, 4096, 250),
     };
 }
 pub fn deinit(l: *Ltest) void {
     l.runtime.deinit();
-    l.zio_rt.deinit();
 }
 
 pub fn testFunc(l: *Ltest, fname: [:0]const u8, comptime func: *const fn (*Lua) c_int, args: anytype) !void {
-    var lua = l.runtime.lua;
+    var lua = l.runtime.lvm.main_thread.state;
     lua.register(fname, func);
     _ = lua.getGlobal(fname);
     const names = comptime std.meta.fieldNames(@TypeOf(args));
@@ -41,7 +33,7 @@ pub fn testFunc(l: *Ltest, fname: [:0]const u8, comptime func: *const fn (*Lua) 
     };
 }
 pub fn testFuncWithLArgs(l: *Ltest, fname: [:0]const u8, comptime func: *const fn (*Lua) c_int, comptime args: usize) !void {
-    var lua = l.runtime.lua;
+    var lua = l.runtime.lvm.main_thread.state;
     lua.register(fname, func);
     _ = lua.getGlobal(fname);
     var i: isize = @intCast(args + 1);
@@ -53,22 +45,22 @@ pub fn testFuncWithLArgs(l: *Ltest, fname: [:0]const u8, comptime func: *const f
     };
 }
 pub fn expectString(l: *Ltest, expected: []const u8) !void {
-    var lua = l.runtime.lua;
+    var lua = l.runtime.lvm.main_thread.state;
     const actual = try lua.to(Lua.String, -1);
     try testing.expectEqualStrings(expected, actual);
 }
 pub fn expectNumber(l: *Ltest, expected: f64) !void {
-    var lua = &l.runtime.lua;
+    var lua = &l.runtime.lvm.main_thread.state;
     const actual = try lua.to(Lua.Number, -1);
     try testing.expectEqual(expected, actual);
 }
 pub fn expect(l: *Ltest) !void {
-    var lua = &l.runtime.lua;
+    var lua = &l.runtime.lvm.main_thread.state;
     const ok = try lua.to(Lua.Bool, -1);
     try testing.expect(ok);
 }
 pub fn expectTable(l: *Ltest, expected: anytype) !void {
-    var lua = &l.runtime.lua;
+    var lua = &l.runtime.lvm.main_thread.state;
     const T = @TypeOf(expected);
     const fields = std.meta.fields(T);
 
@@ -85,7 +77,7 @@ pub fn expectTable(l: *Ltest, expected: anytype) !void {
     }
 }
 fn innerExpect(l: *Ltest, expected: anytype) !void {
-    var lua = &l.runtime.lua;
+    var lua = &l.runtime.lvm.main_thread.state;
     const FieldType = @TypeOf(expected);
     switch (@typeInfo(FieldType)) {
         .pointer => |info| {

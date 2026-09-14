@@ -1,7 +1,8 @@
 --rover test command (searches in test directory for files with *_test naming convention or you can specify the file to look for using the f flag)
 function rover.test(core)
-	core:run(file_create)
-	core:run(file_read)
+	core:run(file_create, "create")
+	core:run(file_read, "read")
+	return core
 end
 
 function file_create()
