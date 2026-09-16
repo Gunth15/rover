@@ -25,6 +25,7 @@ pub fn parse(cargs: std.process.Args) Args {
         args.command = .routes;
     } else if (std.mem.eql(u8, "tests", command)) {
         args.command = .tests;
+        args.file = "tests";
     } else {
         parser_log.err("Unknown command: {s}\n", .{command});
         return args;
@@ -67,10 +68,11 @@ pub fn parse(cargs: std.process.Args) Args {
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
             },
             .tests => {
-                args.file = "tests";
                 if (isarg(flag, "-d", "--dir")) args.file = iter.next() orelse {
                     return parseErr(args, "No directory specified\n", .{});
-                };
+                } else if (isarg(flag, "-h", "--help")) {
+                    args.help = true;
+                } else return parseErr(args, "Unknown argument {s}", .{flag});
             },
         }
     }

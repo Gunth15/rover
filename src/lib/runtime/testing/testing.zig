@@ -21,7 +21,6 @@ const TestFileReturn = union(enum) {
     status: TestFileR,
 };
 
-const LibRover = @embedFile("../librover.lua");
 pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
     var buf: [4096]u8 = undefined;
     const io = r.io;
@@ -59,7 +58,7 @@ pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
                         writer.interface.print("{s}\n", .{ret.status.file_name}) catch {};
                         first_fail = false;
                     }
-                    writer.interface.print("\t({s}) ERROR:\t{s}\n", .{ fail_entry.test_name, fail_entry.reason }) catch {};
+                    writer.interface.print("\t({s}) {s}\n", .{ fail_entry.test_name, fail_entry.reason }) catch {};
                     fail += 1;
                 },
             }
@@ -125,7 +124,7 @@ inline fn startTestEnv(r: *Runtime, entry: Io.Dir.Entry, test_dir: Io.Dir) TestF
                 break :run_test .{
                     .fail = .{
                         .test_name = r.allocator.dupe(u8, func_name) catch |e| @panic(@errorName(e)),
-                        .reason = r.allocator.dupe(u8, err) catch |e| @panic(@errorName(e)),
+                        .reason = r.allocator.dupe(u8, trimReason(err)) catch |e| @panic(@errorName(e)),
                     },
                 };
             };
@@ -139,4 +138,9 @@ inline fn startTestEnv(r: *Runtime, entry: Io.Dir.Entry, test_dir: Io.Dir) TestF
         .file_name = std.fs.path.basename(file_name),
         .entries = list.items,
     };
+}
+
+fn trimReason(full_reason: []const u8) []const u8 {
+    const idx = std.mem.find(u8, full_reason, ":") orelse return full_reason;
+    return full_reason[idx + 1 ..];
 }
