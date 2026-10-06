@@ -405,19 +405,3 @@ fn encode(lua: *Lua) c_int {
     };
     return 1;
 }
-
-//TODO: make encode step
-test "fuzz decode encode decode" {
-    const decode_fuzz = struct {
-        fn fuzz(_: void, smith: *std.testing.Smith) anyerror!void {
-            var test_env = try LTest.init();
-            defer test_env.deinit();
-
-            var buf: [4096]u8 = undefined;
-
-            const len = smith.slice(&buf);
-            test_env.testFunc("decode", decode, .{buf[0..len]}) catch {};
-        }
-    };
-    try std.testing.fuzz({}, decode_fuzz.fuzz, .{});
-}

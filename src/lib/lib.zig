@@ -7,11 +7,14 @@ pub const Connnection = @import("ConnectionContext.zig");
 pub const Engine = @import("engine.zig");
 pub const LTest = @import("Ltest.zig");
 pub const LuaLibs = @import("lua_libs/lua_libs.zig");
+pub const LVM = @import("LuaVM.zig");
+pub const Logger = @import("Logger.zig");
+pub const operation = @import("operation.zig");
 test {
     _ = @import("lua_libs/lua_libs.zig");
     _ = @import("util/util.zig");
-    //_ = @import("io/io.zig");
     _ = @import("httpparser/httpparser.zig");
     _ = @import("lua/Lua.zig");
     _ = @import("Router.zig");
+    _ = @import("LuaVM.zig");
 }

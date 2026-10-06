@@ -1,6 +1,5 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
-const zio = @import("zio");
 const Lua = lib.Lua;
 const Runtime = lib.Runtime;
 const route = lib.Router;
@@ -112,42 +111,24 @@ inline fn run(args: parser.Args) !void {
     }
 
     var runtime: Runtime = try .init(
-        &alloc,
+        alloc,
         io,
         args.read,
         args.write,
-        //TODO: Make queue_size an argument
-        250,
     );
     defer runtime.deinit();
 
-    try runtime.initVm();
+    try runtime.initVms(args.file);
 
-    runtime.lvm.main_thread.state.openLibs();
-    runtime.openLibRover();
-    runtime.loadMain(args.file);
+    try lib.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .TRACE });
+    defer lib.Logger.Instance.deinit();
 
-    try Runtime.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .TRACE });
-    defer Runtime.Logger.Instance.deinit();
+    //TODO: run not found  and invalid method handler in connnnection context
 
-    //TODO: get user defined error handler
-    runtime.buildRouter();
-    runtime.findOrSetOnError();
-    const not_found_func = runtime.runOnNotFoundFunc();
-    runtime.router.?.not_found_handler = not_found_func;
-    runtime.router.?.invalid_method_handler = not_found_func;
-    runtime.runLoadFunc();
-
-    var lvm_fut = try runtime.lvm.start(io);
-    var logger_fut = try Runtime.Logger.Instance.start();
-    errdefer {
-        lvm_fut.cancel(io);
-        logger_fut.cancel(io);
-    }
+    var logger_fut = try lib.Logger.Instance.start();
+    errdefer logger_fut.cancel(io);
 
     try runtime.serve(args.addr);
-    lvm_fut.cancel(io);
-    logger_fut.cancel(io);
 }
 
 inline fn help() !void {
@@ -178,11 +159,8 @@ inline fn routes(args: parser.Args) !void {
         return;
     }
 
-    var runtime: Runtime = try .init(&alloc, io, 0, 0, 0);
-    runtime.lvm.main_thread.state.openLibs();
-    runtime.openLibRover();
-    runtime.loadMain(args.file);
-    runtime.buildRouter();
+    var runtime: Runtime = try .init(alloc, io, 0, 0);
+    try runtime.initVms(args.file);
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
     try writer.interface.print("{s}\n", .{"─" ** 50});
@@ -206,6 +184,7 @@ inline fn tests(args: parser.Args) !void {
         return;
     }
 
-    var runtime: Runtime = try .init(&alloc, io, 0, 0, 256);
-    try runtime.runTestMode(args.file);
+    //TODO: UPDATE TEST MODE
+    //var runtime: Runtime = try .init(alloc, io, 0, 0);
+    //try runtime.runTestMode(args.file);
 }

@@ -2,11 +2,11 @@ const ConnectionContext = @This();
 const std = @import("std");
 const lib = @import("lib.zig");
 const Runtime = lib.Runtime;
-const Logger = &Runtime.Logger.Instance;
+const Logger = &lib.Logger.Instance;
 const Io = std.Io;
 const Lua = lib.Lua;
-const LVM = @import("runtime/LuaVM.zig");
-const operations = @import("runtime/operation.zig");
+const LVM = lib.LVM;
+const operations = lib.operation;
 const Parser = lib.HttpParser;
 const EventQueue = lib.Util.Queue(Io.Event);
 const HttpParser = lib.HttpParser;
@@ -23,11 +23,17 @@ pub const Context = struct {
     arena: std.heap.ArenaAllocator,
 };
 
+const DOESNOTEXIST: c_int = -1;
+const INVALIDMETHOD = -2;
 pub fn createConnectionTable(thread: *Lua, router: *Router, req: *const HttpParser.Request) void {
     thread.newTable();
     const conn_table = thread.getTop();
 
-    const lfunc = router.search(thread, req.method, req.path) catch @panic("Router error");
+    const lfunc = router.search(thread, req.method, req.path) catch |e| switch (e) {
+        error.DoesNotExist => DOESNOTEXIST,
+        error.InvalidMethod => INVALIDMETHOD,
+        error.OutOfMemory => @panic("Out OF MEMORY"),
+    };
     thread.setField(-2, "assigns");
 
     thread.push(req.headers.get("Host"));
@@ -59,13 +65,20 @@ pub fn createConnectionTable(thread: *Lua, router: *Router, req: *const HttpPars
     thread.setMetaTable(conn_table);
     thread.pop(1);
 
-    std.debug.assert(thread.getRawI(Lua.RegistryIndex, lfunc) == .func);
-    Logger.log(.TRACE, "Found handle in router", struct { function_handler: c_int }{ .function_handler = lfunc });
+    if (lfunc == INVALIDMETHOD) {
+        Logger.log(.TRACE, "Invalid method, but royte does not exist in router", .{});
+    } else if (lfunc == DOESNOTEXIST) {
+        Logger.log(.TRACE, "Path does not exist in router", .{});
+    } else {
+        std.debug.assert(thread.getRawI(Lua.RegistryIndex, lfunc) == .func);
+        Logger.log(.TRACE, "Found handle in router", struct { function_handler: c_int }{ .function_handler = lfunc });
+    }
     thread.insert(conn_table);
 }
-pub fn execute(thread: *LVM.Thread, ctxt: *Context) void {
+pub fn execute(inst: *LVM.Instance, ct: *anyopaque) void {
+    const ctxt: *Context = @ptrCast(@alignCast(ct));
     const runtime = ctxt.runtime;
-    var lua = thread.state;
+    var lua = inst.coro.state;
     var nresults: usize = 0;
     switch (lua.resumeT(null, 1, &nresults) catch {
         const err_ptr = lua.getAbs(-1);
@@ -77,38 +90,37 @@ pub fn execute(thread: *LVM.Thread, ctxt: *Context) void {
             const err = lua.to(Lua.String, -1) catch unreachable;
             @panic(err);
         };
-        defer {
-            lua.unref(thread.ref);
-            ctxt.arena.deinit();
-        }
+        defer ctxt.arena.deinit();
         return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
     }) {
         .OK => {
-            defer {
-                lua.unref(thread.ref);
-                ctxt.arena.deinit();
-            }
+            defer ctxt.arena.deinit();
             std.debug.assert(nresults == 1);
             return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
         },
         .YIELDED => {
-            const op = operations.Operation.decode(&lua, runtime.allocator, nresults) catch @panic("TODO: handle errors");
-            op.dispatch(ctxt, thread.*);
+            inst.coro.status = .waiting;
+            const op = operations.Operation.decode(&lua, ctxt.arena.allocator(), nresults) catch @panic("TODO: handle errors");
+            op.dispatch(
+                inst,
+                runtime.io,
+                ctxt.arena.allocator(),
+                execute,
+                ctxt,
+                Context,
+            );
         },
     }
 }
 
-pub fn luaConnectionHandler(thread: *LVM.Thread, userdata: *anyopaque) void {
+pub fn luaConnectionHandler(instance: *LVM.Instance, userdata: *anyopaque) void {
+    const thread = instance.coro.state;
     const ctxt: *Context = @ptrCast(@alignCast(userdata));
     const runtime = ctxt.runtime;
-    var new_thread: LVM.Thread = .{
-        .ref = thread.state.ref(),
-        .state = thread.state.newThread() catch @panic("YOU OOMED LOL"),
-    };
 
     //NOTE: Router is guranteed to run on a single thread because it runs on the LuaVm
-    createConnectionTable(&new_thread.state, &runtime.router.?, &ctxt.req);
-    execute(&new_thread, ctxt);
+    createConnectionTable(@constCast(&thread), &runtime.router.?, &ctxt.req);
+    execute(instance, ctxt);
 }
 
 pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
@@ -164,11 +176,11 @@ pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
         ctxt.req = req;
         ctxt.runtime = runtime;
         ctxt.stream = stream;
-        runtime.lvm.enqueueOne(runtime.io, .{
-            .run = luaConnectionHandler,
-            .userdata = @ptrCast(@alignCast(ctxt)),
-            .thread = runtime.lvm.main_thread,
-        }) catch |e| @panic(@errorName(e));
+        runtime.lvm.run(
+            runtime.io,
+            luaConnectionHandler,
+            @ptrCast(@alignCast(ctxt)),
+        ) catch |e| @panic(@errorName(e));
     }
 }
 fn streamResponseTable(io: Io, lua: *Lua, ctxt: *Context, max_write: usize) void {
