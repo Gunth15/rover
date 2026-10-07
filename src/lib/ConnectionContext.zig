@@ -16,11 +16,16 @@ const Writer = lib.Util.Writer;
 const RequestQueue = Io.Queue(struct { writer: Io.Writer, req: Parser.Request });
 const connection_log = std.log.scoped(.connection);
 
+pub const Request = struct {
+    req: HttpParser.Request,
+    arena: std.heap.ArenaAllocator,
+};
 pub const Context = struct {
     runtime: *Runtime,
-    req: HttpParser.Request,
+    req_queue: std.Deque(Request),
     stream: Io.net.Stream,
     arena: std.heap.ArenaAllocator,
+    mut: std.Io.Mutex = .init,
 };
 
 const DOESNOTEXIST: c_int = -1;
@@ -90,16 +95,27 @@ pub fn execute(inst: *LVM.Instance, ct: *anyopaque) void {
             const err = lua.to(Lua.String, -1) catch unreachable;
             @panic(err);
         };
-        defer ctxt.arena.deinit();
-        return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
+
+        //send data
+        streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
+
+        //tear down request data
+        const req = ctxt.req_queue.popFront().?;
+        req.arena.deinit();
+        return;
     }) {
         .OK => {
-            defer ctxt.arena.deinit();
             std.debug.assert(nresults == 1);
-            return streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
+
+            //send data
+            streamResponseTable(runtime.io, &lua, ctxt, runtime.max_write);
+
+            //tear down request data
+            const req = ctxt.req_queue.popFront().?;
+            req.arena.deinit();
+            return;
         },
         .YIELDED => {
-            inst.coro.status = .waiting;
             const op = operations.Operation.decode(&lua, ctxt.arena.allocator(), nresults) catch @panic("TODO: handle errors");
             op.dispatch(
                 inst,
@@ -118,20 +134,23 @@ pub fn luaConnectionHandler(instance: *LVM.Instance, userdata: *anyopaque) void 
     const ctxt: *Context = @ptrCast(@alignCast(userdata));
     const runtime = ctxt.runtime;
 
-    //NOTE: Router is guranteed to run on a single thread because it runs on the LuaVm
-    createConnectionTable(@constCast(&thread), &runtime.router.?, &ctxt.req);
+    const req = ctxt.req_queue.front().?;
+    createConnectionTable(@constCast(&thread), &runtime.router.?, &req.req);
     execute(instance, ctxt);
 }
 
 pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
-    defer stream.close(runtime.io);
-
     var arena = std.heap.ArenaAllocator.init(runtime.allocator);
 
     var alloc = arena.allocator();
 
     const ctxt = alloc.create(Context) catch @panic("Out of ememory");
-    ctxt.arena = arena;
+    ctxt.* = .{
+        .arena = arena,
+        .runtime = runtime,
+        .stream = stream,
+        .req_queue = .empty,
+    };
 
     //TODO: if connection is keep-alive, read again until timeout or close is sent by user
     //SEND ANOTHER READ
@@ -173,9 +192,10 @@ pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
         Logger.log(.TRACE, "Finished parsing request", struct { handle: Io.net.Socket.Handle, total_bytes_read: usize, request_size: usize }{ .handle = stream.socket.handle, .total_bytes_read = total_bytes_read, .request_size = req.size });
         Logger.log(.DEBUG, "New request", struct { method: []const u8, path: []const u8, request_size: usize }{ .method = req.method, .path = req.path, .request_size = req.size });
 
-        ctxt.req = req;
-        ctxt.runtime = runtime;
-        ctxt.stream = stream;
+        ctxt.req_queue.pushBack(alloc, .{
+            .arena = std.heap.ArenaAllocator.init(runtime.allocator),
+            .req = req,
+        }) catch |e| @panic(@errorName(e));
         runtime.lvm.run(
             runtime.io,
             luaConnectionHandler,

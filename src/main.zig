@@ -1,5 +1,6 @@
 const std = @import("std");
 const lib = @import("lib/lib.zig");
+const zio = @import("zio");
 const Lua = lib.Lua;
 const Runtime = lib.Runtime;
 const route = lib.Router;
@@ -85,7 +86,7 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
 inline fn run(args: parser.Args) !void {
     lib.Util.ctrlC.init();
 
-    var debug_allocator = std.heap.DebugAllocator(.{}).init;
+    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
     defer {
         if (debug_allocator.detectLeaks() != 0) {
             std.debug.print("LEAKED MEMORY\n", .{});
@@ -95,11 +96,7 @@ inline fn run(args: parser.Args) !void {
     const alloc = debug_allocator.allocator();
 
     //TODO: allow swapable io implementation for portability and versatility
-    //const rt = try zio.Runtime.init(alloc, .{
-    //    .thread_pool = .{
-    //        .max_threads = 1,
-    //},
-    //});
+    //const rt = try zio.Runtime.init(alloc, .{});
     //defer rt.deinit();
     //const io = rt.io();
     var threaded = std.Io.Threaded.init(alloc, .{});
@@ -120,7 +117,7 @@ inline fn run(args: parser.Args) !void {
 
     try runtime.initVms(args.file);
 
-    try lib.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .TRACE });
+    try lib.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .INFO });
     defer lib.Logger.Instance.deinit();
 
     //TODO: run not found  and invalid method handler in connnnection context

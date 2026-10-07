@@ -40,6 +40,7 @@ pub fn init(io: Io, buffer: []u8, opts: Options) !void {
     };
 }
 pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
+    if (@as(u8, @intFromEnum(self.level)) > @as(u8, @intFromEnum(level))) return;
     var buffer: [4096]u8 align(@alignOf(Header)) = undefined;
     const header: *Header = @ptrCast(@alignCast(buffer[0..@sizeOf(Header)]));
     var writer = Io.Writer.fixed(buffer[@sizeOf(Header)..]);

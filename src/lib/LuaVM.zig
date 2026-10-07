@@ -94,7 +94,7 @@ pub const Instance = struct {
         lvm.run(io, resume_func, ud);
     }
     ///assumes the function does not return anything and that is will resume the Instance when it needs to
-    pub inline fn yield(i: *Instance, io: std.Io, function: anytype, args: std.meta.ArgsTuple(function)) !void {
+    pub inline fn yield(i: *Instance, io: std.Io, function: anytype, args: std.meta.ArgsTuple(@TypeOf(function))) !void {
         i.coro.status = .waiting;
         _ = try io.concurrent(function, args);
     }
@@ -102,7 +102,6 @@ pub const Instance = struct {
         var coro = i.coro;
         const work = i.worker;
 
-        std.debug.assert(coro.status == .waiting);
         coro.status = .ready;
 
         const job: Job = .{

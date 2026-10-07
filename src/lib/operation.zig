@@ -95,7 +95,7 @@ pub const Operation = union(OperationCode) {
 
         switch (op) {
             .CREATE => |args| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn createFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -145,7 +145,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .OPEN => |args| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn openFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -195,7 +195,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .READ => |args| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn readFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -292,7 +292,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .WRITE => |args| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn writeFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -333,7 +333,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .CLOSE => |file| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn closeFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -373,7 +373,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .CLOCK => |cl_arg| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn clockingIt(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -407,7 +407,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .FLUSH => |file| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn flushFile(
                         instance: *LVM.Instance,
                         cio: Io,
@@ -439,7 +439,7 @@ pub const Operation = union(OperationCode) {
             },
 
             .SEEK => |arg| {
-                _ = io.concurrent(struct {
+                _ = t.yield(io, struct {
                     fn seekFile(
                         instance: *LVM.Instance,
                         cio: Io,
