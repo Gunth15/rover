@@ -97,7 +97,7 @@ pub const Operation = union(OperationCode) {
             .CREATE => |args| {
                 _ = t.yield(io, struct {
                     fn createFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -141,13 +141,13 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.createFile, .{ t, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.createFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
             },
 
             .OPEN => |args| {
                 _ = t.yield(io, struct {
                     fn openFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -191,13 +191,13 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.openFile, .{ t, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.openFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
             },
 
             .READ => |args| {
                 _ = t.yield(io, struct {
                     fn readFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -288,13 +288,13 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.readFile, .{ t, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.readFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
             },
 
             .WRITE => |args| {
                 _ = t.yield(io, struct {
                     fn writeFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -329,13 +329,13 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.writeFile, .{ t, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.writeFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
             },
 
             .CLOSE => |file| {
                 _ = t.yield(io, struct {
                     fn closeFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -369,13 +369,13 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.closeFile, .{ t, io, allocator, callback, ctx, file }) catch @panic("TODO");
+                }.closeFile, .{ t.*, io, allocator, callback, ctx, file }) catch @panic("TODO");
             },
 
             .CLOCK => |cl_arg| {
                 _ = t.yield(io, struct {
                     fn clockingIt(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -396,20 +396,24 @@ pub const Operation = union(OperationCode) {
                         instance.resumeC(cio, struct {
                             fn run(inst: *LVM.Instance, ct: *anyopaque) void {
                                 const cl: *Closure = @ptrCast(@alignCast(ct));
-                                defer cl.alloc.destroy(cl);
+                                const a = cl.alloc;
+                                const contxt = cl.context;
+                                const callb = cl.callback;
 
                                 inst.coro.state.push(cl.time);
-                                cl.callback(inst, cl.context);
+
+                                a.destroy(cl);
+                                callb(inst, contxt);
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.clockingIt, .{ t, io, allocator, callback, ctx, cl_arg }) catch @panic("TODO");
+                }.clockingIt, .{ t.*, io, allocator, callback, ctx, cl_arg }) catch @panic("TODO");
             },
 
             .FLUSH => |file| {
                 _ = t.yield(io, struct {
                     fn flushFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -429,19 +433,21 @@ pub const Operation = union(OperationCode) {
                         instance.resumeC(cio, struct {
                             fn run(inst: *LVM.Instance, ct: *anyopaque) void {
                                 const cl: *Closure = @ptrCast(@alignCast(ct));
-                                defer cl.alloc.destroy(cl);
+                                const a = cl.alloc;
+                                const callb = cl.callback;
 
-                                cl.callback(inst, cl.context);
+                                a.destroy(cl);
+                                callb(inst, cl.context);
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.flushFile, .{ t, io, allocator, callback, ctx, file }) catch @panic("TODO");
+                }.flushFile, .{ t.*, io, allocator, callback, ctx, file }) catch @panic("TODO");
             },
 
             .SEEK => |arg| {
                 _ = t.yield(io, struct {
                     fn seekFile(
-                        instance: *LVM.Instance,
+                        instance: LVM.Instance,
                         cio: Io,
                         alloc: std.mem.Allocator,
                         cb: LVM.VMFunc,
@@ -481,7 +487,7 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.seekFile, .{ t, io, allocator, callback, ctx, arg }) catch @panic("TODO");
+                }.seekFile, .{ t.*, io, allocator, callback, ctx, arg }) catch @panic("TODO");
             },
         }
     }

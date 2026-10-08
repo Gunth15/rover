@@ -98,7 +98,7 @@ pub const Instance = struct {
         i.coro.status = .waiting;
         _ = try io.concurrent(function, args);
     }
-    pub fn resumeC(i: *Instance, io: std.Io, resume_func: VMFunc, ud: *anyopaque) !void {
+    pub fn resumeC(i: *const Instance, io: std.Io, resume_func: VMFunc, ud: *anyopaque) !void {
         var coro = i.coro;
         const work = i.worker;
 
