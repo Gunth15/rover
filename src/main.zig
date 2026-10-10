@@ -117,15 +117,10 @@ inline fn run(args: parser.Args) !void {
 
     try runtime.initVms(args.file);
 
-    try lib.Logger.init(io, try alloc.alloc(u8, 4096), .{ .level = .INFO });
+    try lib.Logger.init(io, .{ .level = .INFO });
     defer lib.Logger.Instance.deinit();
 
-    //TODO: run not found  and invalid method handler in connnnection context
-
-    var logger_fut = try lib.Logger.Instance.start();
-    errdefer logger_fut.cancel(io);
-
-    try runtime.serve(args.addr);
+    try runtime.serve(args.addr, .fromMilliseconds(500));
 }
 
 inline fn help() !void {
@@ -141,14 +136,20 @@ inline fn help() !void {
 }
 
 inline fn routes(args: parser.Args) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
+    defer {
+        if (debug_allocator.deinit() != .ok) {
+            _ = debug_allocator.detectLeaks();
+        }
+    }
+    const alloc = debug_allocator.allocator();
 
     var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
     const io = threaded.io();
 
-    var writer = std.Io.File.stdout().writer(io, try alloc.alloc(u8, 4096));
+    var buff: [4096]u8 = undefined;
+    var writer = std.Io.File.stdout().writer(io, &buff);
     defer writer.flush() catch {};
 
     if (args.help) {
@@ -157,7 +158,9 @@ inline fn routes(args: parser.Args) !void {
     }
 
     var runtime: Runtime = try .init(alloc, io, 0, 0);
+
     try runtime.initVms(args.file);
+    defer runtime.deinit();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
     try writer.interface.print("{s}\n", .{"─" ** 50});
@@ -166,22 +169,22 @@ inline fn routes(args: parser.Args) !void {
 }
 
 inline fn tests(args: parser.Args) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
+    defer {
+        if (debug_allocator.deinit() != .ok) {
+            _ = debug_allocator.detectLeaks();
+        }
+    }
+    const alloc = debug_allocator.allocator();
 
     var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
     const io = threaded.io();
 
-    var writer = std.Io.File.stdout().writer(io, try alloc.alloc(u8, 4096));
-    defer writer.flush() catch {};
+    if (args.help) std.Io.File.stdout().writePositionalAll(io, HELPTEST, 0) catch {};
 
-    if (args.help) {
-        _ = writer.interface.write(HELPTEST) catch {};
-        return;
-    }
+    var runtime: Runtime = try .init(alloc, io, 0, 0);
+    defer runtime.deinit();
 
-    //TODO: UPDATE TEST MODE
-    //var runtime: Runtime = try .init(alloc, io, 0, 0);
-    //try runtime.runTestMode(args.file);
+    try runtime.runTestMode(args.file);
 }

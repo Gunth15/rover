@@ -39,53 +39,59 @@ pub fn deinit(r: *Runtime) void {
     if (r.router) |*router| router.deinit();
     r.lvm.deinit(r.io);
 }
-pub fn initVms(r: *Runtime, file: [:0]const u8) !void {
+pub fn initVms(r: *Runtime, file: ?[:0]const u8) !void {
     const StartupData = struct {
-        file: [:0]const u8,
+        file: ?[:0]const u8,
         runtime: *Runtime,
         router_created: std.atomic.Value(bool) = .init(false),
         fn startfn(lua: *Lua, start_data: ?*anyopaque) void {
             const data: *@This() = @ptrCast(@alignCast(start_data));
 
             openLibsOnVms(lua, data.runtime);
-            loadMainOnVms(lua, data.file);
 
-            if (data.router_created.swap(true, .acq_rel))
-                createRefs(lua)
-            else {
-                buildRouter(lua, data.runtime);
+            if (data.file) |main_file| {
+                loadMainOnVms(lua, main_file);
+                runLoadFunc(lua);
+                findOrSetOnError(lua);
+                findOrSetOnInvalidMethod(lua);
+                findOrSetOnNotFound(lua);
+                if (data.router_created.swap(true, .acq_rel))
+                    createRefs(lua)
+                else {
+                    buildRouter(lua, data.runtime);
+                }
             }
-
-            runLoadFunc(lua);
-            findOrSetOnError(lua);
-            findOrSetOnInvalidMethod(lua);
-            findOrSetOnNotFound(lua);
         }
     };
 
-    const data = try r.lvm.allocator.create(StartupData);
+    const data = try r.allocator.create(StartupData);
     data.* = .{
         .file = file,
         .runtime = r,
     };
-    defer r.lvm.allocator.destroy(data);
+    defer r.allocator.destroy(data);
 
     try r.lvm.start(r.io, StartupData.startfn, @ptrCast(data));
 }
 
-pub fn serve(r: *Runtime, addr: Io.net.IpAddress) !void {
+pub fn serve(r: *Runtime, addr: Io.net.IpAddress, timeout: Io.Duration) !void {
     const io: Io = r.io;
-    r.server = try addr.listen(io, .{ .reuse_address = true });
+    r.server = try addr.listen(io, .{});
     var server = r.server.?;
 
     var group: Io.Group = .init;
     errdefer group.cancel(io);
 
+    var acceptor = try io.concurrent(acceptLoop, .{ r, io, &server, &group });
+
     while (!ctrlC.isPressed()) {
-        const stream = try server.accept(io);
-        try group.concurrent(io, Connection.drain, .{ r, stream });
+        //TODO: replace with a pipe
+        io.sleep(.fromMilliseconds(50), .awake) catch break;
     }
-    try group.await(io);
+
+    acceptor.cancel(io) catch {};
+    io.sleep(timeout, .awake) catch {};
+    group.cancel(io);
 }
 
 pub fn openLibRover(r: *Runtime, lua: *Lua) void {
@@ -115,6 +121,7 @@ pub fn openLibRover(r: *Runtime, lua: *Lua) void {
 }
 
 pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
+    try r.initVms(null);
     try testing.runTestMode(r, test_dir_path);
 }
 fn runLoadFunc(lua: *Lua) void {
@@ -310,6 +317,13 @@ fn loadMainOnVms(lua: *Lua, file: [:0]const u8) void {
         const err = lua.to(Lua.String, -1) catch unreachable;
         fatal("Error during initialization: {s}", .{err}, 1);
     };
+}
+
+fn acceptLoop(r: *Runtime, io: Io, server: *Io.net.Server, group: *Io.Group) !void {
+    while (true) {
+        const stream = try server.accept(io);
+        try group.concurrent(io, Connection.drain, .{ r, stream });
+    }
 }
 
 inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {

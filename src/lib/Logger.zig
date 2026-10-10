@@ -8,6 +8,7 @@ log_queue: Io.Queue(u8),
 io: std.Io,
 file: ?std.Io.File,
 console: ?std.Io.File,
+fut: Io.Future(void),
 
 pub var Instance: @This() = undefined;
 
@@ -30,14 +31,18 @@ const Options = struct {
     console: bool = true,
     file: ?[]const u8 = null,
 };
-pub fn init(io: Io, buffer: []u8, opts: Options) !void {
+pub fn init(io: Io, opts: Options) !void {
     Instance = .{
         .io = io,
         .level = opts.level,
-        .log_queue = .init(buffer),
+        .log_queue = undefined,
         .console = if (opts.console) Io.File.stderr() else null,
         .file = if (opts.file) |abs_path| try Io.Dir.createFileAbsolute(io, abs_path, .{}) else null,
+        .fut = undefined,
     };
+    Instance.fut = try io.concurrent(main, .{&Instance});
+    //TODO: add synchronization flag instead of sleep loop
+    try io.sleep(.fromMilliseconds(50), .awake);
 }
 pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
     if (@as(u8, @intFromEnum(self.level)) > @as(u8, @intFromEnum(level))) return;
@@ -55,10 +60,10 @@ pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
     self.log_queue.putAll(self.io, buffer[0 .. @sizeOf(Header) + written.len]) catch {};
 }
 
-pub fn start(self: *@This()) !Io.Future(void) {
-    return try self.io.concurrent(main, .{self});
-}
 fn main(self: *@This()) void {
+    var log_queue_buff: [4096 * 3]u8 = undefined;
+    self.log_queue = .init(&log_queue_buff);
+
     var file_buff: [4096]u8 = undefined;
     var console_buff: [4096]u8 = undefined;
 
@@ -87,6 +92,7 @@ fn main(self: *@This()) void {
     }
 }
 pub fn deinit(self: *@This()) void {
+    self.fut.cancel(self.io);
     if (self.console) |console| console.close(self.io);
     if (self.file) |log_file| log_file.close(self.io);
     self.log_queue.close(self.io);

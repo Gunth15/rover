@@ -75,6 +75,7 @@ pub fn deinit(lvm: *LVM, io: std.Io) void {
     lvm.mut.unlock(io);
 
     lvm.running.store(false, .monotonic);
+    for (lvm.workers) |w| if (w) |wo| wo.sem.post(io);
     lvm.group.await(io) catch {};
 
     while (lvm.job_queue.popFirst()) |node| {
@@ -244,6 +245,7 @@ fn worker(vm: *LVM, io: std.Io, id: usize, startfn: ?*const fn (*Lua, ?*anyopaqu
         }
         check += 1;
     }
+    vm.workers[id] = null;
 }
 
 test "LVM test" {
@@ -270,11 +272,11 @@ test "LVM test" {
     const io = std.testing.io;
 
     var lvm = try LVM.init(allocator, .{});
+    defer lvm.deinit(io);
 
     try lvm.start(io, null, null);
 
     for (0..1000) |_| try lvm.run(io, c.fib, @ptrCast(@constCast(&{})));
 
-    lvm.deinit(io);
     try std.testing.expectEqual(55 * 1000, c.sum.load(.monotonic));
 }

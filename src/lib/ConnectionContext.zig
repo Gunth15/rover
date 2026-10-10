@@ -140,6 +140,8 @@ pub fn luaConnectionHandler(instance: *LVM.Instance, userdata: *anyopaque) void 
 }
 
 pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
+    defer stream.close(runtime.io);
+
     var arena = std.heap.ArenaAllocator.init(runtime.allocator);
 
     var alloc = arena.allocator();
@@ -162,12 +164,10 @@ pub fn drain(runtime: *Runtime, stream: Io.net.Stream) void {
 
     handle_request: while (true) {
         const limit = runtime.max_read - parsed_bytes;
-        _ = reader.interface.stream(&buffered_Writer.writer, .limited(limit)) catch |e| {
-            switch (e) {
-                Io.Reader.StreamError.ReadFailed => return connection_log.err("{any}", .{reader.err}),
-                Io.Reader.StreamError.WriteFailed => return connection_log.err("No more ememory", .{}),
-                Io.Reader.StreamError.EndOfStream => break :handle_request,
-            }
+        _ = reader.interface.stream(&buffered_Writer.writer, .limited(limit)) catch |e| switch (e) {
+            Io.Reader.StreamError.ReadFailed => return connection_log.err("Read failed: {any}", .{reader.err}),
+            Io.Reader.StreamError.WriteFailed => return connection_log.err("No more memory", .{}),
+            Io.Reader.StreamError.EndOfStream => break :handle_request,
         };
         const buf = buffered_Writer.written();
 
