@@ -22,7 +22,6 @@ const Level = enum(u8) {
 };
 const Header = struct {
     level: Level,
-    timestamp: Io.Timestamp,
     payload_size: usize,
 };
 
@@ -54,7 +53,6 @@ pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
 
     header.* = Header{
         .level = level,
-        .timestamp = .now(self.io, .real),
         .payload_size = written.len,
     };
     self.log_queue.putAll(self.io, buffer[0 .. @sizeOf(Header) + written.len]) catch {};

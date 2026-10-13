@@ -19,6 +19,7 @@ function rover.routes()
 end
 
 function Hello(conn)
+	rover.logger.log("Hello world handler ran", { ha = 1 })
 	return conn:send_bytes(200, "<h1>Welcome</h1>\r\n", {})
 end
 function File(conn)
