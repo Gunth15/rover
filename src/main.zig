@@ -117,7 +117,7 @@ inline fn run(args: parser.Args) !void {
 
     try runtime.initVms(args.file);
 
-    try lib.Logger.init(io, .{ .level = .INFO });
+    try lib.Logger.init(io, .{ .level = .TRACE });
     defer lib.Logger.Instance.deinit();
 
     try runtime.serve(args.addr, .fromMilliseconds(500));

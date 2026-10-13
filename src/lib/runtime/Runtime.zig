@@ -322,7 +322,7 @@ fn loadMainOnVms(lua: *Lua, file: [:0]const u8) void {
 fn acceptLoop(r: *Runtime, io: Io, server: *Io.net.Server, group: *Io.Group) !void {
     while (true) {
         const stream = try server.accept(io);
-        try group.concurrent(io, Connection.drain, .{ r, stream });
+        try group.concurrent(io, Connection.handle, .{ r, stream });
     }
 }
 
