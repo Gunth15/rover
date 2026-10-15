@@ -190,6 +190,7 @@ pub const TypeError = error{
     ExpectedUnsigned,
     ExpectedFloat,
     ExepectedNumber,
+    ExepectedString,
     ExpectedBool,
     ExpectedNull,
     ExpectedPointer,
@@ -231,7 +232,7 @@ pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
             //if not a string, pointers are pushed as lightuserdata(very unsafe lol)
             if (info.size == .slice and info.child == u8) {
                 var len: usize = 0;
-                const ptr = c.lua_tolstring(l.state, @intCast(index), &len);
+                const ptr = c.lua_tolstring(l.state, @intCast(index), &len) orelse return error.ExepectedString;
                 return ptr[0..len];
             } else return @ptrCast(c.lua_touserdata(l.state, @intCast(index)) orelse return error.ExpectedPointer);
         },

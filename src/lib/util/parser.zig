@@ -2,18 +2,28 @@ const std = @import("std");
 const parser_log = @import("std").log.scoped(.parser);
 
 pub const Args = struct {
-    command: enum { run, help, routes, tests } = .help,
+    command: enum {
+        run,
+        help,
+        routes,
+        tests,
+        config,
+    } = .help,
     file: [:0]const u8 = "main.lua",
+    config: [:0]const u8 = "config.lua",
     help: bool = false,
-    connections: usize = 500,
-    io: usize = 600,
+    connections: ?usize = null,
     read: usize = 4096,
-    write: usize = 4096,
-    memory: usize = 1024,
+    memory: ?usize = null,
     addr: std.Io.net.IpAddress = std.Io.net.IpAddress.parse("127.0.0.1", 8080) catch .{},
+    single_threaded: bool = false,
+    lua_threads: usize,
 };
 pub fn parse(cargs: std.process.Args) Args {
-    var args: Args = .{};
+    var args: Args = .{
+        .lua_threads = std.Thread.getCpuCount() catch 1,
+    };
+
     var iter = cargs.iterate();
     _ = iter.next();
     const command = iter.next() orelse return args;
@@ -26,6 +36,8 @@ pub fn parse(cargs: std.process.Args) Args {
     } else if (std.mem.eql(u8, "tests", command)) {
         args.command = .tests;
         args.file = "tests";
+    } else if (std.mem.eql(u8, "config", command)) {
+        args.command = .config;
     } else {
         parser_log.err("Unknown command: {s}\n", .{command});
         return args;
@@ -38,26 +50,24 @@ pub fn parse(cargs: std.process.Args) Args {
             .run => {
                 if (isarg(flag, "-f", "--file")) args.file = iter.next() orelse {
                     return parseErr(args, "No file specified\n", .{});
-                } else if (isarg(flag, "-c", "--connections")) {
-                    const connections = iter.next() orelse return parseErr(args, "Max concurrent connections not specified\n", .{});
-                    args.connections = std.fmt.parseInt(usize, connections, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{connections});
+                } else if (isarg(flag, "-c", "--config")) {
+                    return parseErr(args, "No config specified\n", .{});
                 } else if (isarg(flag, "-m", "--memory")) {
                     const memory = iter.next() orelse return parseErr(args, "Extra memory not specified\n", .{});
-                    args.memory = std.fmt.parseInt(usize, memory, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{memory});
-                } else if (isarg(flag, "-i", "--io")) {
-                    const io = iter.next() orelse return parseErr(args, "Io events number not specified\n", .{});
-                    args.io = std.fmt.parseInt(usize, io, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{io});
+                    args.memory = std.fmt.parseInt(usize, memory, 0) catch return parseErr(args, "{s} is not a unsigned integer\n", .{memory});
                 } else if (isarg(flag, "-r", "--read")) {
                     const read = iter.next() orelse return parseErr(args, "Read buffer size not specified\n", .{});
-                    args.read = std.fmt.parseInt(usize, read, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{read});
-                } else if (isarg(flag, "-w", "--write")) {
-                    const write = iter.next() orelse return parseErr(args, "Write buffer size not specified\n", .{});
-                    args.write = std.fmt.parseInt(usize, write, 10) catch return parseErr(args, "{s} is not a unsigned integer\n", .{write});
+                    args.read = std.fmt.parseInt(usize, read, 0) catch return parseErr(args, "{s} is not a unsigned integer\n", .{read});
                 } else if (isarg(flag, "-a", "--addr")) {
                     const addr = iter.next() orelse return parseErr(args, "No address provided\n", .{});
                     args.addr = std.Io.net.IpAddress.parseLiteral(addr) catch return parseErr(args, "{s} is not a valid address\n", .{addr});
                 } else if (isarg(flag, "-h", "--help")) {
                     args.help = true;
+                } else if (isarg(flag, "-s", "--single_threaded")) {
+                    args.single_threaded = true;
+                } else if (isarg(flag, "-l", "--lua_threads")) {
+                    const thread_count = iter.next() orelse return parseErr(args, "Number of lua threads not specified\n", .{});
+                    args.lua_threads = std.fmt.parseInt(usize, thread_count, 0) catch return parseErr(args, "{s} is not a unsigned integer\n", .{thread_count});
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
             },
             .routes => {
@@ -73,6 +83,11 @@ pub fn parse(cargs: std.process.Args) Args {
                 } else if (isarg(flag, "-h", "--help")) {
                     args.help = true;
                 } else return parseErr(args, "Unknown argument {s}", .{flag});
+            },
+            .config => {
+                if (isarg(flag, "-c", "--config")) {
+                    return parseErr(args, "No config specified\n", .{});
+                }
             },
         }
     }

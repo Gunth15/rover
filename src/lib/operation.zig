@@ -25,6 +25,21 @@ const OperationCode = enum(u8) {
     FLUSH = 6,
     SEEK = 7,
 };
+
+/// Tries to run `func` through `t.yield`. If yielding fails (e.g. no
+/// concurrency available, allocation failure), `func` is run inline on the
+/// current thread instead of panicking.
+fn yieldOrRun(
+    t: *LVM.Instance,
+    io: Io,
+    comptime func: anytype,
+    args: anytype,
+) void {
+    _ = t.yield(io, func, args) catch {
+        @call(.auto, func, args);
+    };
+}
+
 pub const Operation = union(OperationCode) {
     OPEN: struct {
         file_name: []const u8,
@@ -95,7 +110,7 @@ pub const Operation = union(OperationCode) {
 
         switch (op) {
             .CREATE => |args| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn createFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -141,11 +156,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.createFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.createFile, .{ t.*, io, allocator, callback, ctx, args });
             },
 
             .OPEN => |args| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn openFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -191,11 +206,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.openFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.openFile, .{ t.*, io, allocator, callback, ctx, args });
             },
 
             .READ => |args| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn readFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -288,11 +303,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.readFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.readFile, .{ t.*, io, allocator, callback, ctx, args });
             },
 
             .WRITE => |args| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn writeFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -329,11 +344,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.writeFile, .{ t.*, io, allocator, callback, ctx, args }) catch @panic("TODO");
+                }.writeFile, .{ t.*, io, allocator, callback, ctx, args });
             },
 
             .CLOSE => |file| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn closeFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -369,11 +384,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.closeFile, .{ t.*, io, allocator, callback, ctx, file }) catch @panic("TODO");
+                }.closeFile, .{ t.*, io, allocator, callback, ctx, file });
             },
 
             .CLOCK => |cl_arg| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn clockingIt(
                         instance: LVM.Instance,
                         cio: Io,
@@ -407,11 +422,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.clockingIt, .{ t.*, io, allocator, callback, ctx, cl_arg }) catch @panic("TODO");
+                }.clockingIt, .{ t.*, io, allocator, callback, ctx, cl_arg });
             },
 
             .FLUSH => |file| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn flushFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -441,11 +456,11 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.flushFile, .{ t.*, io, allocator, callback, ctx, file }) catch @panic("TODO");
+                }.flushFile, .{ t.*, io, allocator, callback, ctx, file });
             },
 
             .SEEK => |arg| {
-                _ = t.yield(io, struct {
+                yieldOrRun(t, io, struct {
                     fn seekFile(
                         instance: LVM.Instance,
                         cio: Io,
@@ -487,7 +502,7 @@ pub const Operation = union(OperationCode) {
                             }
                         }.run, @ptrCast(closure)) catch |e| @panic(@errorName(e));
                     }
-                }.seekFile, .{ t.*, io, allocator, callback, ctx, arg }) catch @panic("TODO");
+                }.seekFile, .{ t.*, io, allocator, callback, ctx, arg });
             },
         }
     }

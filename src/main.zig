@@ -21,6 +21,7 @@ const HELP =
     \\  help                Show all commands
     \\  routes              Displays all routes
     \\  tests               Runs test out of the test directory(defaults to ./test)
+    \\  config              Print the current configuration
     \\
 ;
 const HELPRUN =
@@ -31,14 +32,13 @@ const HELPRUN =
     \\  rover run [options]
     \\
     \\Options:
-    \\  -c, --connections <n>     Max number of concurrent connections
-    \\  -m, --memory <bytes>      Per-connection memory (non-Lua). Excludes I/O buffers.
-    \\                            Crashes on overflow.
-    \\  -i, --io <n>              Expected I/O events (rounded to next power of two)
+    \\  -m, --memory <bytes>      Limits memory allocations made by the entire process.
+    \\  -c, --config <path>       Specify config file
     \\  -r, --read <bytes>        Max read buffer per connection (rounded to power of two)
-    \\  -w, --write <bytes>       Max write buffer per connection (rounded to power of two)
     \\  -f, --file <path>         Lua script to execute
     \\  -a, --addr <addr:port>    Address to bind (e.g. 127.0.0.1:8080)
+    \\  -s, --single_threaded     Runs server in single threaded mode
+    \\  -l, --lua_threads         Number of threads dedicated to lua workers
     \\  -h, --help                Show this help message
     \\
 ;
@@ -67,6 +67,16 @@ const HELPTEST =
     \\  -h, --help              Show this help message
     \\
 ;
+const HELPCONFIG =
+    \\Rover 0.0.1
+    \\Cameron W.
+    \\
+    \\Usage:
+    \\  rover config 
+    \\
+    \\Options:
+    \\  -c, --config <path>       Specify config file
+;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const args = parser.parse(init.args);
@@ -75,6 +85,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .run => return run(args),
         .routes => return routes(args),
         .tests => return tests(args),
+        .config => return config(args),
     }
 }
 
@@ -86,7 +97,12 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
 inline fn run(args: parser.Args) !void {
     lib.Util.ctrlC.init();
 
-    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
+    var debug_allocator = std.heap.DebugAllocator(.{
+        .enable_memory_limit = true,
+    }).init;
+
+    if (args.memory) |memory| debug_allocator.requested_memory_limit = memory;
+
     defer {
         if (debug_allocator.detectLeaks() != 0) {
             std.debug.print("LEAKED MEMORY\n", .{});
@@ -107,19 +123,21 @@ inline fn run(args: parser.Args) !void {
         std.Io.File.stdout().writeStreamingAll(io, HELPRUN) catch {};
     }
 
-    var runtime: Runtime = try .init(
-        alloc,
-        io,
-        args.read,
-        args.write,
-    );
+    var runtime: Runtime = try .init(alloc, io, .{
+        .max_read = 4096,
+        .lvm_opts = .{
+            .vm_count = std.Thread.getCpuCount() catch 1,
+            .is_concurrency = true,
+        },
+    });
     defer runtime.deinit();
 
-    try runtime.initVms(args.file);
+    try runtime.initVms(args.file, args.config);
 
     try lib.Logger.init(io, .{ .level = .TRACE });
     defer lib.Logger.Instance.deinit();
 
+    //TODO: allow timout to be configurable
     try runtime.serve(args.addr, .fromMilliseconds(500));
 }
 
@@ -157,9 +175,9 @@ inline fn routes(args: parser.Args) !void {
         return;
     }
 
-    var runtime: Runtime = try .init(alloc, io, 0, 0);
+    var runtime: Runtime = try .init(alloc, io, .{});
 
-    try runtime.initVms(args.file);
+    try runtime.initVms(args.file, args.config);
     defer runtime.deinit();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
@@ -183,8 +201,30 @@ inline fn tests(args: parser.Args) !void {
 
     if (args.help) std.Io.File.stdout().writePositionalAll(io, HELPTEST, 0) catch {};
 
-    var runtime: Runtime = try .init(alloc, io, 0, 0);
+    var runtime: Runtime = try .init(alloc, io, .{});
     defer runtime.deinit();
 
     try runtime.runTestMode(args.file);
+}
+
+inline fn config(args: parser.Args) !void {
+    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
+    defer {
+        if (debug_allocator.deinit() != .ok) {
+            _ = debug_allocator.detectLeaks();
+        }
+    }
+    const alloc = debug_allocator.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    if (args.help) std.Io.File.stdout().writePositionalAll(io, HELPCONFIG, 0) catch {};
+
+    var runtime: Runtime = try .init(alloc, io, .{});
+    defer runtime.deinit();
+
+    try runtime.initVms(null, args.config);
+    try runtime.printConfigFile();
 }

@@ -6,6 +6,7 @@ workers: []?*VMWorker,
 running: std.atomic.Value(bool) = .init(true),
 
 ready_count: std.atomic.Value(usize) = .init(0),
+single_instance: ?Lua = null,
 vm_count: usize,
 last_vm: usize = 0,
 
@@ -57,18 +58,22 @@ pub const VMWorker = struct {
     sem: std.Io.Semaphore = .{},
 };
 
-const Options = struct {
+pub const Options = struct {
     vm_count: ?usize = null,
+    is_concurrency: bool = true,
 };
 pub inline fn init(allocator: std.mem.Allocator, opts: Options) !LVM {
+    const vm_count: ?usize = if (opts.is_concurrency) opts.vm_count else 0;
     return .{
-        .vm_count = opts.vm_count orelse try std.Thread.getCpuCount(),
+        .vm_count = vm_count orelse try std.Thread.getCpuCount(),
         .job_queue = .{},
-        .workers = try allocator.alloc(?*VMWorker, opts.vm_count orelse try std.Thread.getCpuCount()),
+        .workers = try allocator.alloc(?*VMWorker, vm_count orelse try std.Thread.getCpuCount()),
         .allocator = allocator,
+        .group = .init,
     };
 }
 pub fn deinit(lvm: *LVM, io: std.Io) void {
+    if (lvm.single_instance) |*lua| lua.deinit();
     lvm.mut.lock(io) catch {};
     while (lvm.job_queue.first) |_|
         lvm.pending_cond.wait(io, &lvm.mut) catch {};
@@ -96,10 +101,12 @@ pub const Instance = struct {
     }
     ///assumes the function does not return anything and that is will resume the Instance when it needs to
     pub inline fn yield(i: *Instance, io: std.Io, function: anytype, args: std.meta.ArgsTuple(@TypeOf(function))) !void {
+        std.debug.assert(i.lvm.single_instance == null);
         i.coro.status = .waiting;
         _ = try io.concurrent(function, args);
     }
     pub fn resumeC(i: *const Instance, io: std.Io, resume_func: VMFunc, ud: *anyopaque) !void {
+        std.debug.assert(i.lvm.single_instance == null);
         var coro = i.coro;
         const work = i.worker;
 
@@ -118,6 +125,21 @@ pub const Instance = struct {
 
 pub const VMFunc = *const fn (*Instance, userdata: *anyopaque) void;
 pub fn run(lvm: *LVM, io: std.Io, vmfunc: VMFunc, ud: *anyopaque) !void {
+    if (lvm.single_instance) |*lua| {
+        var work: VMWorker = .{
+            .id = 0,
+            .local_queue = undefined,
+        };
+        var instance: Instance = .{
+            .coro = Coroutine.init(lua) catch @panic("Thread failure"),
+            .worker = &work,
+            .lvm = lvm,
+        };
+        vmfunc(&instance, ud);
+        instance.coro.deinit(lua);
+        return;
+    }
+
     ////VM MUTEX BORROW
     try lvm.mut.lock(io);
     defer lvm.mut.unlock(io);
@@ -168,6 +190,12 @@ fn getJobs(lvm: *LVM, io: std.Io, buff: []Job) !usize {
 }
 
 pub fn start(lvm: *LVM, io: std.Io, startfn: ?*const fn (*Lua, ?*anyopaque) void, start_data: ?*anyopaque) !void {
+    if (lvm.vm_count == 0) {
+        lvm.single_instance = try .init(.{ .allocator = &lvm.allocator });
+        if (startfn) |func| func(&lvm.single_instance.?, start_data);
+        return;
+    }
+
     for (0..lvm.vm_count) |i| try lvm.group.concurrent(io, worker, .{ lvm, io, i, startfn, start_data });
     while (lvm.ready_count.load(.monotonic) < lvm.vm_count) std.atomic.spinLoopHint();
 }
@@ -272,11 +300,44 @@ test "LVM test" {
     const io = std.testing.io;
 
     var lvm = try LVM.init(allocator, .{});
-    defer lvm.deinit(io);
 
     try lvm.start(io, null, null);
 
     for (0..1000) |_| try lvm.run(io, c.fib, @ptrCast(@constCast(&{})));
 
+    lvm.deinit(io);
     try std.testing.expectEqual(55 * 1000, c.sum.load(.monotonic));
+}
+
+test "LVM test single threaded" {
+    const c = struct {
+        var sum: std.atomic.Value(f64) = .init(0);
+        fn fib(instance: *Instance, _: *anyopaque) void {
+            var lua = instance.coro.state;
+            lua.doString(
+                \\function fib(n)
+                \\    if n <= 1 then
+                \\        return n
+                \\    end
+                \\    return fib(n - 1) + fib(n - 2)
+                \\end
+                \\return fib(10)
+            ) catch |e| @panic(@errorName(e));
+            const number = lua.to(Lua.Number, -1) catch |e| @panic(@errorName(e));
+            std.testing.expectEqual(55, number) catch |e| @panic(@errorName(e));
+            _ = sum.fetchAdd(number, .monotonic);
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var lvm = try LVM.init(allocator, .{ .is_concurrency = false });
+
+    try lvm.start(io, null, null);
+
+    for (0..3) |_| try lvm.run(io, c.fib, @ptrCast(@constCast(&{})));
+
+    lvm.deinit(io);
+    try std.testing.expectEqual(55 * 3, c.sum.load(.monotonic));
 }

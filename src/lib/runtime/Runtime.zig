@@ -5,7 +5,6 @@ router: ?Router = null,
 router_lock: Io.RwLock = .init,
 allocator: std.mem.Allocator,
 max_read: usize,
-max_write: usize,
 const std = @import("std");
 const lib = @import("../lib.zig");
 const route = lib.Router;
@@ -25,13 +24,16 @@ pub const Logger = lib.Logger;
 const Runtime = @This();
 const LibRover = @embedFile("../librover.lua");
 
-pub fn init(alloc: std.mem.Allocator, io: Io, max_read: usize, max_write: usize) !Runtime {
+pub const Options = struct {
+    max_read: usize = 4096 * 4,
+    lvm_opts: LVM.Options = .{},
+};
+pub fn init(alloc: std.mem.Allocator, io: Io, opt: Options) !Runtime {
     return Runtime{
         .io = io,
         .lvm = try .init(alloc, .{}),
         .allocator = alloc,
-        .max_read = max_read,
-        .max_write = max_write,
+        .max_read = opt.max_read,
     };
 }
 pub fn deinit(r: *Runtime) void {
@@ -39,9 +41,10 @@ pub fn deinit(r: *Runtime) void {
     if (r.router) |*router| router.deinit();
     r.lvm.deinit(r.io);
 }
-pub fn initVms(r: *Runtime, file: ?[:0]const u8) !void {
+pub fn initVms(r: *Runtime, mfile: ?[:0]const u8, cfile: ?[:0]const u8) !void {
     const StartupData = struct {
-        file: ?[:0]const u8,
+        mfile: ?[:0]const u8,
+        cfile: ?[:0]const u8,
         runtime: *Runtime,
         router_created: std.atomic.Value(bool) = .init(false),
         fn startfn(lua: *Lua, start_data: ?*anyopaque) void {
@@ -49,7 +52,8 @@ pub fn initVms(r: *Runtime, file: ?[:0]const u8) !void {
 
             openLibsOnVms(lua, data.runtime);
 
-            if (data.file) |main_file| {
+            if (data.cfile) |config_file| loadConfig(lua, config_file);
+            if (data.mfile) |main_file| {
                 loadMainOnVms(lua, main_file);
                 runLoadFunc(lua);
                 findOrSetOnError(lua);
@@ -66,7 +70,8 @@ pub fn initVms(r: *Runtime, file: ?[:0]const u8) !void {
 
     const data = try r.allocator.create(StartupData);
     data.* = .{
-        .file = file,
+        .mfile = mfile,
+        .cfile = cfile,
         .runtime = r,
     };
     defer r.allocator.destroy(data);
@@ -74,7 +79,7 @@ pub fn initVms(r: *Runtime, file: ?[:0]const u8) !void {
     try r.lvm.start(r.io, StartupData.startfn, @ptrCast(data));
 }
 
-pub fn serve(r: *Runtime, addr: Io.net.IpAddress, timeout: Io.Duration) !void {
+pub fn serve(r: *Runtime, addr: Io.net.IpAddress, dangling_connection_timeout: Io.Duration) !void {
     const io: Io = r.io;
     r.server = try addr.listen(io, .{});
     var server = r.server.?;
@@ -82,7 +87,7 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress, timeout: Io.Duration) !void {
     var group: Io.Group = .init;
     errdefer group.cancel(io);
 
-    var acceptor = try io.concurrent(acceptLoop, .{ r, io, &server, &group });
+    var acceptor = io.concurrent(acceptLoop, .{ r, io, &server, &group }) catch return r.serveSingleThreaded();
 
     while (!ctrlC.isPressed()) {
         //TODO: replace with a pipe
@@ -90,8 +95,20 @@ pub fn serve(r: *Runtime, addr: Io.net.IpAddress, timeout: Io.Duration) !void {
     }
 
     acceptor.cancel(io) catch {};
-    io.sleep(timeout, .awake) catch {};
+    io.sleep(dangling_connection_timeout, .awake) catch {};
     group.cancel(io);
+}
+fn serveSingleThreaded(r: *Runtime) !void {
+    var server = r.server.?;
+    const io = r.io;
+    while (true) {
+        const stream = try server.accept(io);
+        Connection.handle(r, stream);
+    }
+}
+
+pub fn printConfigFile(r: *Runtime) !void {
+    try r.lvm.run(r.io, printConfigFileCb, r);
 }
 
 pub fn openLibRover(r: *Runtime, lua: *Lua) void {
@@ -121,7 +138,7 @@ pub fn openLibRover(r: *Runtime, lua: *Lua) void {
 }
 
 pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
-    try r.initVms(null);
+    try r.initVms(null, null);
     try testing.runTestMode(r, test_dir_path);
 }
 fn runLoadFunc(lua: *Lua) void {
@@ -306,6 +323,87 @@ fn openLibsOnVms(lua: *Lua, runtime: *Runtime) void {
     lua.openLibs();
     runtime.openLibRover(lua);
 }
+fn loadConfig(lua: *Lua, file: [:0]const u8) void {
+    const config_loader =
+        \\local function load_config(path)
+        \\  local config = {}
+        \\
+        \\  local env = setmetatable({}, {
+        \\    __index = function(_, k)
+        \\      local v = config[k]
+        \\      if v ~= nil then return v end
+        \\      return _G[k]
+        \\    end,
+        \\    __newindex = function(_, k, v)
+        \\      config[k] = v
+        \\    end,
+        \\  })
+        \\
+        \\  local f, err = loadfile(path, "t", env)
+        \\  if not f then return err end
+        \\
+        \\  local ok, run_err = pcall(f)
+        \\  if not ok then return run_err end
+        \\
+        \\  return config
+        \\end
+        \\
+        \\return load_config
+    ;
+
+    // stack: (empty)
+    lua.loadString(config_loader) catch {
+        const err = lua.to(Lua.String, -1) catch "<non-string error>";
+        fatal("{s}", .{err}, 1);
+    };
+
+    // stack: chunk
+    lua.pcall(0, 1) catch {
+        const err = lua.to(Lua.String, -1) catch "<non-string error>";
+        fatal("{s}", .{err}, 1);
+    };
+
+    // stack: load_config
+    lua.push(file);
+    lua.pcall(1, 1) catch {
+        const err = lua.to(Lua.String, -1) catch "<non-string error>";
+        fatal("{s}", .{err}, 1);
+    };
+
+    // stack: result (config table on success, error string on failure)
+    if (lua.Luatype(-1) != .table) {
+        if (lua.Luatype(-1) == .string) {
+            const err = lua.to(Lua.String, -1) catch unreachable;
+            fatal("config: {s}", .{err}, 1);
+        }
+        fatal("config: loader returned {s}", .{@tagName(lua.Luatype(-1))}, 1);
+    }
+
+    lua.setGlobal("config"); // pops the table
+}
+
+fn printConfigFileCb(inst: *LVM.Instance, ud: *anyopaque) void {
+    var buff: [4096]u8 = undefined;
+    const runtime: *Runtime = @ptrCast(@alignCast(ud));
+    var lua = inst.coro.state;
+
+    var writer = std.Io.File.stdout().writer(runtime.io, &buff);
+    defer writer.interface.flush() catch {};
+
+    std.debug.assert(lua.getGlobal("config") == .table);
+    defer lua.pop(1);
+
+    lua.push(null);
+    while (lua.Next(-2) != .nil) {
+        const key = lua.to(Lua.String, -2) catch "<non-string key>";
+        const value = lua.to(Lua.String, -1) catch "<non-string value>";
+
+        writer.interface.print("{s} = {s}\n", .{ key, value }) catch {};
+
+        lua.pop(1);
+    }
+}
+
 fn loadMainOnVms(lua: *Lua, file: [:0]const u8) void {
     std.debug.assert(lua.getGlobal("rover") == .table);
     //load main file(allow user to define path to file)

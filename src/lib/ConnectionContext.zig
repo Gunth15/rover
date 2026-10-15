@@ -16,6 +16,15 @@ const Writer = lib.Util.Writer;
 const RequestQueue = Io.Queue(struct { writer: Io.Writer, req: Parser.Request });
 const connection_log = std.log.scoped(.connection);
 
+const INTERNAL_SERVER_ERROR =
+    \\HTTP/1.1 500 Internal Server Error\r\n
+    \\Content-Type: text/plain; charset=utf-8\r\n
+    \\Content-Length: 21\r\n
+    \\Connection: close\r\n
+    \\\r\n
+    \\Internal Server Error
+;
+
 //TODO: need better allocation scheme
 pub const Sequence = struct {
     id: u32,
@@ -145,18 +154,67 @@ pub fn handle(runtime: *Runtime, stream: Io.net.Stream) void {
         .in_flight = .init(0),
     };
 
-    var read_fut = runtime.io.concurrent(read_loop, .{ @ptrCast(&ctxt), stream }) catch |e| @panic(@errorName(e));
-    var write_fut = runtime.io.concurrent(write_loop, .{ @ptrCast(&ctxt), stream }) catch |e| @panic(@errorName(e));
-    read_fut.await(runtime.io) catch |e| {
-        @panic(@errorName(e));
+    var read_fut = runtime.io.concurrent(read_loop, .{ @ptrCast(&ctxt), stream }) catch {
+        readWriteLoop(&ctxt, stream);
+        ctxt.resp_queue.close(runtime.io);
+        return;
     };
+
+    var write_fut = runtime.io.concurrent(write_loop, .{ @ptrCast(&ctxt), stream }) catch |e| @panic(@errorName(e));
+
+    read_fut.await(runtime.io) catch |e| catchReadError(&ctxt, e, stream);
 
     ctxt.resp_queue.close(runtime.io);
 
     write_fut.await(runtime.io) catch |e| {
-        @panic(@errorName(e));
+        Logger.log(.ERROR, "Failed to write to connection", struct { reason: @TypeOf(e) }{ .reason = e });
     };
 }
+
+fn readWriteLoop(ctxt: *Context, stream: std.Io.net.Stream) void {
+    const runtime = ctxt.runtime;
+    const alloc = runtime.allocator;
+    var rbuff: [4096]u8 = undefined;
+    var reader = stream.reader(runtime.io, &rbuff);
+
+    var wbuff: [4096]u8 = undefined;
+    var writer = stream.writer(runtime.io, &wbuff);
+
+    var buffered_Writer: Io.Writer.Allocating = .init(alloc);
+    defer buffered_Writer.deinit();
+
+    var next_id: u32 = 0;
+    while (true) {
+        const maybe_req = readOnce(runtime, &reader, &buffered_Writer) catch |e| return catchReadError(ctxt, e, stream);
+        const req = maybe_req orelse return;
+
+        _ = buffered_Writer.writer.consumeAll();
+
+        Logger.log(.TRACE, "Finished parsing request", struct { handle: Io.net.Socket.Handle, total_bytes_read: usize, request_size: usize }{ .handle = stream.socket.handle, .total_bytes_read = buffered_Writer.written().len, .request_size = req.size });
+        Logger.log(.DEBUG, "New request", struct { method: []const u8, path: []const u8, request_size: usize }{ .method = req.method, .path = req.path, .request_size = req.size });
+
+        var seq: Sequence = Sequence{
+            .arena = .init(alloc),
+            .resp = undefined,
+            .ctxt = ctxt,
+            .id = next_id,
+            .req = req,
+        };
+
+        runtime.lvm.run(
+            runtime.io,
+            luaConnectionHandler,
+            @ptrCast(@alignCast(&seq)),
+        ) catch |e| @panic(@errorName(e));
+
+        //Should be one element on queue
+        _ = ctxt.resp_queue.getOneUncancelable(runtime.io) catch unreachable;
+        writer.interface.writeAll(seq.resp.toOwnedSlice() catch |e| @panic(@errorName(e))) catch |e| @panic(@errorName(e));
+        writer.interface.flush() catch |e| @panic(@errorName(e));
+        next_id += 1;
+    }
+}
+
 fn queueResponse(request: *Sequence, lua: *Lua) void {
     var l = lua;
     var aw = Io.Writer.Allocating.init(request.arena.allocator());
@@ -186,7 +244,45 @@ fn queueResponse(request: *Sequence, lua: *Lua) void {
     request.resp = aw;
     request.ctxt.resp_queue.putOne(request.ctxt.runtime.io, request) catch |e| @panic(@errorName(e));
 }
-fn read_loop(ctxt: *Context, stream: Io.net.Stream) !void {
+
+const ReadOnceError = error{OutOfMemory} || std.Io.net.Stream.Reader.Error || Parser.ParseError;
+inline fn readOnce(runtime: *Runtime, reader: *Io.net.Stream.Reader, alloc_w: *Io.Writer.Allocating) !?Parser.Request {
+    read_loop: while (true) {
+        const bytes_read = alloc_w.written().len;
+        const limit = runtime.max_read - bytes_read;
+        _ = reader.interface.stream(&alloc_w.writer, .limited(limit)) catch |e| switch (e) {
+            Io.Reader.StreamError.ReadFailed => return reader.err.?,
+            Io.Reader.StreamError.WriteFailed => return ReadOnceError.OutOfMemory,
+            Io.Reader.StreamError.EndOfStream => return null,
+        };
+        const buf = alloc_w.written();
+
+        return Parser.parse(buf, runtime.allocator, 64, bytes_read) catch |e| switch (e) {
+            error.PartialRequest => continue :read_loop,
+            else => return e,
+        };
+    }
+}
+inline fn catchReadError(ctxt: *Context, e: ReadOnceError, stream: Io.net.Stream) void {
+    const runtime = ctxt.runtime;
+    switch (e) {
+        //TODO: Handle parse errors
+        ReadOnceError.OutOfMemory => {
+            //This will make sure the queue is emptied
+            //before attempting to write to the stream
+            //to avoid corruption
+            ctxt.resp_queue.close(runtime.io);
+            var errbuff: [4096]u8 = undefined;
+            var ew = stream.writer(runtime.io, &errbuff);
+            ew.interface.writeAll(INTERNAL_SERVER_ERROR) catch {};
+            Logger.log(.ERROR, "Out of Memory", .{});
+            ew.interface.flush() catch {};
+        },
+        else => Logger.log(.ERROR, "Failed to read connection", struct { reason: ReadOnceError }{ .reason = e }),
+    }
+}
+
+fn read_loop(ctxt: *Context, stream: Io.net.Stream) ReadOnceError!void {
     //TODO: if connection is keep-alive, read again until timeout or close is sent by user
     //SEND ANOTHER READ
     const runtime = ctxt.runtime;
@@ -196,42 +292,15 @@ fn read_loop(ctxt: *Context, stream: Io.net.Stream) !void {
 
     var next_id: u32 = 0;
 
-    //NOTE: this may cause issues at some point if a connection read Failed
-    //and a job was already enqueued to the vm and the buffer is freed
     var buffered_Writer: Io.Writer.Allocating = .init(alloc);
     defer buffered_Writer.deinit();
 
-    var parsed_bytes: usize = 0;
-    var total_bytes_read: usize = 0;
+    while (true) {
+        Logger.log(.TRACE, "Reading connection", struct { handle: Io.net.Socket.Handle }{ .handle = stream.socket.handle });
+        const req = try readOnce(runtime, &reader, &buffered_Writer) orelse return;
 
-    handle_request: while (true) {
-        const limit = runtime.max_read - parsed_bytes;
-        _ = reader.interface.stream(&buffered_Writer.writer, .limited(limit)) catch |e| switch (e) {
-            Io.Reader.StreamError.ReadFailed => return e,
-            Io.Reader.StreamError.WriteFailed => return e,
-            Io.Reader.StreamError.EndOfStream => break :handle_request,
-        };
-        const buf = buffered_Writer.written();
-
-        total_bytes_read += buf.len;
-
-        Logger.log(.TRACE, "Reading connection", struct { handle: Io.net.Socket.Handle, buffer: []const u8 }{ .handle = stream.socket.handle, .buffer = buf });
-        const req = Parser.parse(buf, alloc, 64, parsed_bytes) catch |e| {
-            switch (e) {
-                Parser.ParseError.PartialRequest => {
-                    parsed_bytes += buf.len;
-                    continue :handle_request;
-                },
-                else => {
-                    Logger.log(.ERROR, "Failed to read connection", struct { reason: @TypeOf(e) }{ .reason = e });
-                    return;
-                },
-            }
-        };
-
-        parsed_bytes = 0;
         _ = buffered_Writer.writer.consumeAll();
-        Logger.log(.TRACE, "Finished parsing request", struct { handle: Io.net.Socket.Handle, total_bytes_read: usize, request_size: usize }{ .handle = stream.socket.handle, .total_bytes_read = total_bytes_read, .request_size = req.size });
+        Logger.log(.TRACE, "Finished parsing request", struct { handle: Io.net.Socket.Handle, total_bytes_read: usize, request_size: usize }{ .handle = stream.socket.handle, .total_bytes_read = buffered_Writer.written().len, .request_size = req.size });
         Logger.log(.DEBUG, "New request", struct { method: []const u8, path: []const u8, request_size: usize }{ .method = req.method, .path = req.path, .request_size = req.size });
 
         const seq = try alloc.create(Sequence);
@@ -243,17 +312,17 @@ fn read_loop(ctxt: *Context, stream: Io.net.Stream) !void {
             .req = req,
         };
         _ = ctxt.in_flight.fetchAdd(1, .monotonic);
-        next_id += 1;
         runtime.lvm.run(
             runtime.io,
             luaConnectionHandler,
             @ptrCast(@alignCast(seq)),
         ) catch |e| @panic(@errorName(e));
+
+        next_id += 1;
     }
-    //spin-lock
+    //NOTE: spin-lock
     while (ctxt.in_flight.load(.acquire) != 0) continue;
 }
-
 fn write_loop(ctxt: *Context, stream: Io.net.Stream) !void {
     var buff: [4096]u8 = undefined;
     var sbuff: [256]*Sequence = undefined;

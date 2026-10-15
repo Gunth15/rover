@@ -1,6 +1,7 @@
 const std = @import("std");
 const lib = @import("lib.zig");
 const Io = std.Io;
+const builtin = @import("builtin");
 
 level: Level,
 log_queue: Io.Queue(u8),
@@ -8,7 +9,7 @@ log_queue: Io.Queue(u8),
 io: std.Io,
 file: ?std.Io.File,
 console: ?std.Io.File,
-fut: Io.Future(void),
+fut: ?Io.Future(void),
 
 pub var Instance: @This() = undefined;
 
@@ -39,7 +40,7 @@ pub fn init(io: Io, opts: Options) !void {
         .file = if (opts.file) |abs_path| try Io.Dir.createFileAbsolute(io, abs_path, .{}) else null,
         .fut = undefined,
     };
-    Instance.fut = try io.concurrent(main, .{&Instance});
+    Instance.fut = io.concurrent(main, .{&Instance}) catch null;
     //TODO: add synchronization flag instead of sleep loop
     try io.sleep(.fromMilliseconds(50), .awake);
 }
@@ -55,18 +56,15 @@ pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
         .level = level,
         .payload_size = written.len,
     };
-    self.log_queue.putAll(self.io, buffer[0 .. @sizeOf(Header) + written.len]) catch {};
+    if (self.fut) |_|
+        self.log_queue.putAll(self.io, buffer[0 .. @sizeOf(Header) + written.len]) catch {}
+    else
+        self.writeSync(written) catch {};
 }
 
 fn main(self: *@This()) void {
     var log_queue_buff: [4096 * 3]u8 = undefined;
     self.log_queue = .init(&log_queue_buff);
-
-    var file_buff: [4096]u8 = undefined;
-    var console_buff: [4096]u8 = undefined;
-
-    const file_writer = if (self.file) |file| file.writer(self.io, &file_buff) else null;
-    const console_writer = if (self.console) |console| console.writer(self.io, &console_buff) else null;
 
     var buff: [4096]u8 align(@alignOf(Header)) = undefined;
     while (!lib.Util.ctrlC.isPressed()) {
@@ -78,24 +76,29 @@ fn main(self: *@This()) void {
         std.debug.assert(written == header.payload_size);
 
         const writable = buff[@sizeOf(Header) .. @sizeOf(Header) + written];
-
-        if (file_writer) |*w| {
-            defer @constCast(w).flush() catch if (console_writer) |cw| fmtLog(.ERROR, .now(self.io, .real), @constCast(&cw.interface), @errorName(w.err.?), .{}) catch {};
-            @constCast(w).interface.writeAll(writable) catch if (console_writer) |cw| fmtLog(.ERROR, .now(self.io, .real), @constCast(&cw.interface), @errorName(w.err.?), .{}) catch {};
-        }
-        if (console_writer) |*w| {
-            defer @constCast(w).flush() catch {};
-            @constCast(w).interface.writeAll(writable) catch {};
-        }
+        self.writeSync(writable) catch {};
     }
 }
 pub fn deinit(self: *@This()) void {
-    self.fut.cancel(self.io);
+    if (self.fut) |*fut| fut.cancel(self.io);
     if (self.console) |console| console.close(self.io);
     if (self.file) |log_file| log_file.close(self.io);
     self.log_queue.close(self.io);
 }
-
+fn writeSync(self: *@This(), buff: []const u8) !void {
+    var file_buff: [4096]u8 = undefined;
+    var console_buff: [4096]u8 = undefined;
+    const file_writer = if (self.file) |file| file.writer(self.io, &file_buff) else null;
+    const console_writer = if (self.console) |console| console.writer(self.io, &console_buff) else null;
+    if (file_writer) |*w| {
+        defer @constCast(w).flush() catch if (console_writer) |cw| fmtLog(.ERROR, .now(self.io, .real), @constCast(&cw.interface), @errorName(w.err.?), .{}) catch {};
+        @constCast(w).interface.writeAll(buff) catch if (console_writer) |cw| fmtLog(.ERROR, .now(self.io, .real), @constCast(&cw.interface), @errorName(w.err.?), .{}) catch {};
+    }
+    if (console_writer) |*w| {
+        defer @constCast(w).flush() catch {};
+        @constCast(w).interface.writeAll(buff) catch {};
+    }
+}
 fn fmtLog(level: Level, timestamp: Io.Timestamp, w: *Io.Writer, desc: []const u8, args: anytype) !void {
     const level_fmt = switch (level) {
         .TRACE => "\x1b[1;105m\x1b[1:37m" ++ " TRACE " ++ "\x1b[0;40m\x1b[0;37m",
@@ -107,6 +110,18 @@ fn fmtLog(level: Level, timestamp: Io.Timestamp, w: *Io.Writer, desc: []const u8
     };
     try w.print("{s}({d}): \x1b[38;5;229m{s}\x1b[0;40m ", .{ level_fmt, timestamp.toMilliseconds(), desc });
     //TODO: create type and functions to make compile time logging better
-    inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |field| try w.print("{s}={any} ", .{ field.name, @field(args, field.name) });
+    inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |field| {
+        if (field.type == []u8 or field.type == []const u8) {
+            const string = @field(args, field.name);
+            const len = @min(string.len, 80);
+            try w.print("{s}={s}{s}", .{
+                field.name,
+                string[0..len],
+                if (string.len > 80) "... " else " ",
+            });
+            continue;
+        }
+        try w.print("{s}={any} ", .{ field.name, @field(args, field.name) });
+    }
     try w.writeByte('\n');
 }
