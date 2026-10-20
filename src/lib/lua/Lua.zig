@@ -556,28 +556,33 @@ fn toLuaFuntcion(comptime func: *const fn (*LuaState) c_int) CFunction {
     };
     return closure.close;
 }
-fn allocatorFn(ap: ?*anyopaque, ptr: ?*anyopaque, old_size: usize, new_size: usize) callconv(.c) ?*anyopaque {
-    const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ap orelse return null));
 
-    // free
+const lua_align: std.mem.Alignment = .@"16";
+pub fn allocatorFn(ap: ?*anyopaque, ptr: ?*anyopaque, old_size: usize, new_size: usize) callconv(.c) ?*anyopaque {
+    const alloc: *std.mem.Allocator = @ptrCast(@alignCast(ap orelse return null));
+    const ra = @returnAddress();
+
     if (new_size == 0) {
         if (ptr) |p| {
-            const slice = @as([*]u8, @ptrCast(p))[0..old_size];
-            alloc.free(slice);
+            const old: []u8 = @as([*]u8, @ptrCast(p))[0..old_size];
+            alloc.rawFree(old, lua_align, ra);
         }
         return null;
     }
 
-    // alloc
     if (ptr == null) {
-        const slice = alloc.alloc(u8, new_size) catch return null;
-        return @ptrCast(slice.ptr);
+        return @ptrCast(alloc.rawAlloc(new_size, lua_align, ra));
     }
 
-    // realloc
-    const old_slice = @as([*]u8, @ptrCast(ptr.?))[0..old_size];
-    const new_slice = alloc.realloc(old_slice, new_size) catch return null;
-    return @ptrCast(new_slice.ptr);
+    const old: []u8 = @as([*]u8, @ptrCast(ptr.?))[0..old_size];
+
+    if (alloc.rawRemap(old, lua_align, new_size, ra)) |p| return @ptrCast(p);
+
+    const new = alloc.rawAlloc(new_size, lua_align, ra) orelse return null;
+    const n = @min(old_size, new_size);
+    @memcpy(new[0..n], old[0..n]);
+    alloc.rawFree(old, lua_align, ra);
+    return @ptrCast(new);
 }
 
 test "can call basic lua function" {

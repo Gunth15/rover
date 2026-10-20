@@ -6,6 +6,7 @@ const Runtime = lib.Runtime;
 const route = lib.Router;
 const Router = route.Router(c_int, .{ .lua = true });
 const parser = lib.Util.parser;
+const Config = lib.Config;
 const main_log = @import("std").log.scoped(.start_up);
 
 var SHUTDOWN = false;
@@ -95,13 +96,20 @@ inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
 }
 
 inline fn run(args: parser.Args) !void {
+    if (args.help) {
+        var threaded = std.Io.Threaded.init_single_threaded;
+        std.Io.File.stdout().writeStreamingAll(threaded.io(), HELPRUN) catch {};
+    }
+
+    var conf = try Config.load(args.config, .fromArgs(args));
+    defer conf.deinit();
+
     lib.Util.ctrlC.init();
 
     var debug_allocator = std.heap.DebugAllocator(.{
         .enable_memory_limit = true,
     }).init;
-
-    if (args.memory) |memory| debug_allocator.requested_memory_limit = memory;
+    if (conf.memory) |memory| debug_allocator.requested_memory_limit = memory;
 
     defer {
         if (debug_allocator.detectLeaks() != 0) {
@@ -111,42 +119,30 @@ inline fn run(args: parser.Args) !void {
 
     const alloc = debug_allocator.allocator();
 
-    //TODO: allow swapable io implementation for portability and versatility
-    //const rt = try zio.Runtime.init(alloc, .{});
-    //defer rt.deinit();
-    //const io = rt.io();
-    var threaded = std.Io.Threaded.init(alloc, .{});
+    var threaded = if (conf.single_threaded) std.Io.Threaded.init_single_threaded else std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    if (args.help) {
-        std.Io.File.stdout().writeStreamingAll(io, HELPRUN) catch {};
-    }
-
     var runtime: Runtime = try .init(alloc, io, .{
-        .max_read = 4096,
+        .max_read = conf.max_read,
         .lvm_opts = .{
-            .vm_count = std.Thread.getCpuCount() catch 1,
-            .is_concurrency = true,
+            .vm_count = conf.lua_threads,
+            .is_concurrency = !conf.single_threaded,
         },
     });
     defer runtime.deinit();
 
-    try runtime.initVms(args.file, args.config);
+    try runtime.initVms(conf.main_file, args.config);
 
     try lib.Logger.init(io, .{ .level = .TRACE });
     defer lib.Logger.Instance.deinit();
 
     //TODO: allow timout to be configurable
-    try runtime.serve(args.addr, .fromMilliseconds(500));
+    try runtime.serve(conf.address, .fromMilliseconds(500));
 }
 
 inline fn help() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded = std.Io.Threaded.init(alloc, .{});
+    var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
 
     std.Io.File.stdout().writeStreamingAll(io, HELP) catch {};
@@ -154,13 +150,18 @@ inline fn help() !void {
 }
 
 inline fn routes(args: parser.Args) !void {
-    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
-    defer {
-        if (debug_allocator.deinit() != .ok) {
-            _ = debug_allocator.detectLeaks();
-        }
+    if (args.help) {
+        var threaded = std.Io.Threaded.init_single_threaded;
+        const io = threaded.io();
+        std.Io.File.stdout().writeStreamingAll(io, HELPROUTES) catch {};
     }
-    const alloc = debug_allocator.allocator();
+
+    var conf = try Config.load(args.config, .fromArgs(args));
+    defer conf.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
@@ -170,14 +171,9 @@ inline fn routes(args: parser.Args) !void {
     var writer = std.Io.File.stdout().writer(io, &buff);
     defer writer.flush() catch {};
 
-    if (args.help) {
-        _ = writer.interface.write(HELPROUTES) catch {};
-        return;
-    }
-
     var runtime: Runtime = try .init(alloc, io, .{});
 
-    try runtime.initVms(args.file, args.config);
+    try runtime.initVms(conf.main_file, args.config);
     defer runtime.deinit();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
@@ -187,34 +183,36 @@ inline fn routes(args: parser.Args) !void {
 }
 
 inline fn tests(args: parser.Args) !void {
-    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
-    defer {
-        if (debug_allocator.deinit() != .ok) {
-            _ = debug_allocator.detectLeaks();
-        }
+    if (args.help) {
+        var threaded = std.Io.Threaded.init_single_threaded;
+        const io = threaded.io();
+        std.Io.File.stdout().writePositionalAll(io, HELPTEST, 0) catch {};
     }
-    const alloc = debug_allocator.allocator();
+
+    var conf = try Config.load(args.config, .fromArgs(args));
+    defer conf.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    if (args.help) std.Io.File.stdout().writePositionalAll(io, HELPTEST, 0) catch {};
-
     var runtime: Runtime = try .init(alloc, io, .{});
     defer runtime.deinit();
 
-    try runtime.runTestMode(args.file);
+    //TODO: test file needs to be converted in conf
+    //TODO: test not working right now
+    try runtime.runTestMode("test");
 }
 
+//TODO: make config file a genral setting
 inline fn config(args: parser.Args) !void {
-    var debug_allocator = std.heap.DebugAllocator(.{ .thread_safe = true }).init;
-    defer {
-        if (debug_allocator.deinit() != .ok) {
-            _ = debug_allocator.detectLeaks();
-        }
-    }
-    const alloc = debug_allocator.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();

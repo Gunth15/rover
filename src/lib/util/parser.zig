@@ -9,7 +9,7 @@ pub const Args = struct {
         tests,
         config,
     } = .help,
-    file: [:0]const u8 = "main.lua",
+    file: ?[:0]const u8 = null,
     config: [:0]const u8 = "config.lua",
     help: bool = false,
     connections: ?usize = null,
@@ -17,12 +17,10 @@ pub const Args = struct {
     memory: ?usize = null,
     addr: std.Io.net.IpAddress = std.Io.net.IpAddress.parse("127.0.0.1", 8080) catch .{},
     single_threaded: bool = false,
-    lua_threads: usize,
+    lua_threads: ?usize = null,
 };
 pub fn parse(cargs: std.process.Args) Args {
-    var args: Args = .{
-        .lua_threads = std.Thread.getCpuCount() catch 1,
-    };
+    var args: Args = .{};
 
     var iter = cargs.iterate();
     _ = iter.next();

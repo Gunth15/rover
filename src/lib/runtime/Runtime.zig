@@ -110,7 +110,6 @@ fn serveSingleThreaded(r: *Runtime) !void {
 pub fn printConfigFile(r: *Runtime) !void {
     try r.lvm.run(r.io, printConfigFileCb, r);
 }
-
 pub fn openLibRover(r: *Runtime, lua: *Lua) void {
     lua.push(r);
     lua.setField(Lua.RegistryIndex, "rover_runtime");
@@ -323,7 +322,7 @@ fn openLibsOnVms(lua: *Lua, runtime: *Runtime) void {
     lua.openLibs();
     runtime.openLibRover(lua);
 }
-fn loadConfig(lua: *Lua, file: [:0]const u8) void {
+pub fn loadConfig(lua: *Lua, file: [:0]const u8) void {
     const config_loader =
         \\local function load_config(path)
         \\  local config = {}

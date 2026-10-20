@@ -9,12 +9,19 @@ pub const LTest = @import("Ltest.zig");
 pub const LuaLibs = @import("lua_libs/lua_libs.zig");
 pub const LVM = @import("LuaVM.zig");
 pub const Logger = @import("Logger.zig");
+pub const Config = @import("Config.zig");
 pub const operation = @import("operation.zig");
 test {
-    _ = @import("lua_libs/lua_libs.zig");
     _ = @import("util/util.zig");
     _ = @import("httpparser/httpparser.zig");
     _ = @import("lua/Lua.zig");
     _ = @import("Router.zig");
+    _ = @import("runtime/Runtime.zig");
+    _ = @import("ConnectionContext.zig");
+    _ = @import("engine.zig");
+    _ = @import("Ltest.zig");
+    _ = @import("lua_libs/lua_libs.zig");
     _ = @import("LuaVM.zig");
+    _ = @import("Logger.zig");
+    _ = @import("operation.zig");
 }
