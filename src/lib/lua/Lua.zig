@@ -118,8 +118,8 @@ pub fn call(l: *LuaState, func: [:0]const u8, args: anytype, ResultType: type) C
     const ArgsType = @typeInfo(@TypeOf(args));
     comptime if (ArgsType != .@"struct") @compileError("expected tuple or struct argument, found " ++ @typeName(ArgsType));
     const arg_struct = ArgsType.@"struct";
-    const nargs: comptime_int = arg_struct.fields.len;
-    inline for (arg_struct.fields) |field| l.push(@field(args, field.name));
+    const nargs: comptime_int = arg_struct.field_names.len;
+    inline for (arg_struct.field_names) |name| l.push(@field(args, name));
 
     //pop result
     //const ResultInfo = @typeInfo(ResultType);

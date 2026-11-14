@@ -6,23 +6,23 @@ const Blob = sqlite.Blob;
 const Text = sqlite.Text;
 const c = @import("c");
 
-stmt: *c.sqlite3_stmt,
+stmt: ?*c.sqlite3_stmt = null,
 
 const Statement = @This();
 
-fn Iterator(T: type) type {
+pub fn Iterator(T: type) type {
     return struct {
         const Self = @This();
         stmt: Statement,
-        pub fn next(self: *Self) err.Error!bool {
+        pub fn next(self: *Self) QueryError!bool {
             const ret = c.sqlite3_step(self.stmt.stmt);
 
             if (ret == c.SQLITE_ROW) return true else if (ret == c.SQLITE_DONE) {
-                self.stmt.reset();
+                self.stmt.reset() catch {};
                 return false;
             }
 
-            return err.translate(ret) orelse return false;
+            return err.errorFromCode(ret) orelse return false;
         }
         pub fn row(self: *Self) err.Error!T {
             return try self.stmt.row(T);
@@ -32,10 +32,10 @@ fn Iterator(T: type) type {
         }
     };
 }
-pub inline fn deinit(stmt: *Statement) err.Error!void {
-    return err.translate(c.sqlite3_finalize(stmt.stmt)) orelse {};
+pub inline fn finalize(stmt: *Statement) void {
+    _ = c.sqlite3_finalize(stmt.stmt);
 }
-inline fn reset(stmt: *Statement) !void {
+inline fn reset(stmt: *Statement) err.Error!void {
     return err.translate(c.sqlite3_reset(stmt.stmt));
 }
 const TypeError = error{
@@ -52,10 +52,10 @@ pub inline fn row(stmt: *Statement, T: type) TypeError!T {
     const info = @typeInfo(T);
     comptime if (info != .@"struct") @compileError("Sqlite can rows must be mapped to a struct");
 
-    const ret: T = .{};
+    var ret: T = undefined;
 
-    inline for (0.., info.@"struct".fields) |i, field| {
-        @field(ret, field.name) = stmt.column(field.type, i);
+    inline for (0.., info.@"struct".field_names, info.@"struct".field_types) |i, name, V| {
+        @field(ret, name) = try stmt.column(V, i);
     }
     return ret;
 }
@@ -66,14 +66,14 @@ pub inline fn column(stmt: *Statement, T: type, i: usize) TypeError!T {
 
     switch (c.sqlite3_column_type(stmt.stmt, i)) {
         c.SQLITE_INTEGER => {
-            if (info != .number) return TypeError.ExpectedInt64;
+            if (info != .int) return TypeError.ExpectedInt64;
             const int: i64 = c.sqlite3_column_int64(stmt.stmt, i);
             return @intCast(int);
         },
         c.SQLITE_FLOAT => {
             if (info != .float) return TypeError.ExpectedFloat;
             const float: f64 = c.sqlite3_column_double(stmt.stmt, i);
-            return float;
+            return @floatCast(float);
         },
         c.SQLITE_TEXT => {
             if (T != sqlite.Text) return TypeError.ExpectedText;
@@ -89,12 +89,13 @@ pub inline fn column(stmt: *Statement, T: type, i: usize) TypeError!T {
             if (info != .optional) return TypeError.NotNullable;
             return null;
         },
+        else => return TypeError.UnexpectedType,
     }
 }
 
 pub inline fn exec(stmnt: *Statement) err.Error!void {
-    defer stmnt.reset();
-    return err.translate(c.sqlite3_step(stmnt.stmt)) orelse {};
+    defer stmnt.reset() catch {};
+    return err.translate(c.sqlite3_step(stmnt.stmt));
 }
 //NOTE: blobs and strings are borrowed
 pub inline fn Query(stmnt: *Statement, T: type) Iterator(T) {
@@ -103,9 +104,10 @@ pub inline fn Query(stmnt: *Statement, T: type) Iterator(T) {
     };
 }
 //NOTE: blobs and strings are borrowed
-pub inline fn QueryOnce(stmnt: *Statement, T: type) err.Error!T {
-    return err.translate(c.sqlite3_step(stmnt.stmt)) orelse {
-        defer stmnt.reset();
+const QueryError = error{} || err.Error || TypeError;
+pub inline fn QueryOnce(stmnt: *Statement, T: type) QueryError!T {
+    return err.errorFromCode(c.sqlite3_step(stmnt.stmt)) orelse {
+        defer stmnt.reset() catch {};
         return try stmnt.row(T);
     };
 }
@@ -121,10 +123,10 @@ pub inline fn binds(stmnt: *Statement, values: anytype) err.Error!void {
         try stmnt.bind(i, value);
     }
 }
-pub inline fn bind(stmnt: *Statement, idx: usize, value: anytype) err.Error!void {
-    return switch (@typeInfo(value)) {
-        .int => stmnt.bindInt(idx, value),
-        .float => stmnt.bindDouble(idx, value),
+pub fn bind(stmnt: *Statement, idx: usize, value: anytype) err.Error!void {
+    return switch (@typeInfo(@TypeOf(value))) {
+        .int, .comptime_int => stmnt.bindInt(idx, value),
+        .float, .comptime_float => stmnt.bindDouble(idx, value),
         .null => stmnt.bindNull(idx),
         .optional => if (value) |v| stmnt.bind(v) else stmnt.bindNull(idx),
         .@"struct" => if (@TypeOf(value) == Blob) stmnt.bindBlob(idx, value.data) else if (@TypeOf(value) == Text) stmnt.bindBlob(idx, value.data) else @compileError("Unsupported type"),
@@ -157,7 +159,7 @@ pub inline fn bindInt(stmnt: *Statement, idx: usize, int: isize) err.Error!void 
     return err.translate(
         c.sqlite3_bind_int64(
             stmnt.stmt,
-            idx,
+            @intCast(idx),
             @as(c_int, @intCast(int)),
         ),
     );

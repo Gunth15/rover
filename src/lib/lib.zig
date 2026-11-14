@@ -15,6 +15,7 @@ pub const Sqlite = @import("sqlite/sqlite3.zig");
 test {
     _ = @import("util/util.zig");
     _ = @import("httpparser/httpparser.zig");
+    _ = @import("sqlite/sqlite3.zig");
     _ = @import("lua/Lua.zig");
     _ = @import("Router.zig");
     _ = @import("runtime/Runtime.zig");
