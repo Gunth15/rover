@@ -24,7 +24,7 @@ fn load(lua: *Lua) c_int {
 
     //TODO: Handle errors
     compile(&r, &allocating_writer.writer) catch {};
-    const strz = alloc.dupeZ(u8, allocating_writer.written()) catch lua.fmtError("Out out of memory", .{});
+    const strz = alloc.dupeSentinel(u8, allocating_writer.written(), 0) catch lua.fmtError("Out out of memory", .{});
     lua.loadString(strz) catch {};
     lua.pcall(0, 1) catch {};
 

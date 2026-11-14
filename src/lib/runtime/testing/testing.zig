@@ -163,7 +163,7 @@ fn createJob(r: *Runtime, done: *Io.Semaphore, dir: Io.Dir, entry: Io.Dir.Entry)
 
     var buf: [4096]u8 = undefined;
     const len = try dir.realPathFile(r.io, entry.name, &buf);
-    job.path = try job.arena.allocator().dupeZ(u8, buf[0..len]);
+    job.path = try job.arena.allocator().dupeSentinel(u8, buf[0..len], 0);
     job.name = std.fs.path.basename(job.path);
     return job;
 }
@@ -234,7 +234,7 @@ pub fn runTestMode(r: *Runtime, test_dir_path: []const u8) !void {
             }
         }
     }
-    writer.interface.print("{s}\nPASS: {d}\tFAIL: {d}\n", .{ "-" ** 30, pass, fail }) catch {};
+    writer.interface.print("{s}\nPASS: {d}\tFAIL: {d}\n", .{ @as([30]u8, @splat('-')), pass, fail }) catch {};
 }
 
 fn trimReason(full_reason: []const u8) []const u8 {

@@ -44,8 +44,9 @@ pub fn init(io: Io, opts: Options) !void {
     //TODO: add synchronization flag instead of sleep loop
     try io.sleep(.fromMilliseconds(50), .awake);
 }
+//TODO: Make a logLua function
 pub fn log(self: *@This(), level: Level, desc: []const u8, args: anytype) void {
-    if (@as(u8, @intFromEnum(self.level)) > @as(u8, @intFromEnum(level))) return;
+    if (@as(u8, @backingInt(self.level)) > @as(u8, @backingInt(level))) return;
     var buffer: [4096]u8 align(@alignOf(Header)) = undefined;
     const header: *Header = @ptrCast(@alignCast(buffer[0..@sizeOf(Header)]));
     var writer = Io.Writer.fixed(buffer[@sizeOf(Header)..]);
@@ -109,19 +110,19 @@ fn fmtLog(level: Level, timestamp: Io.Timestamp, w: *Io.Writer, desc: []const u8
         .FATAL => "\x1b[1;107m\x1b[0:30m" ++ " FATAL " ++ "\x1b[0;40m\x1b[0;37m",
     };
     try w.print("{s}({d}): \x1b[38;5;229m{s}\x1b[0;40m ", .{ level_fmt, timestamp.toMilliseconds(), desc });
-    //TODO: create type and functions to make compile time logging better
-    inline for (@typeInfo(@TypeOf(args)).@"struct".fields) |field| {
-        if (field.type == []u8 or field.type == []const u8) {
-            const string = @field(args, field.name);
+    const s = @typeInfo(@TypeOf(args)).@"struct";
+    inline for (s.field_names, s.field_types) |name, T| {
+        if (T == []u8 or T == []const u8) {
+            const string = @field(args, name);
             const len = @min(string.len, 80);
             try w.print("{s}={s}{s}", .{
-                field.name,
+                name,
                 string[0..len],
                 if (string.len > 80) "... " else " ",
             });
             continue;
         }
-        try w.print("{s}={any} ", .{ field.name, @field(args, field.name) });
+        try w.print("{s}={any} ", .{ name, @field(args, name) });
     }
     try w.writeByte('\n');
 }

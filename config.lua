@@ -5,3 +5,6 @@ MAX_READ = 4096
 MAIN_FILE = "./examples/simple/main.lua"
 SINGLE_THREADED = false
 LUA_THREADS = 8
+-- TODO: add these
+MIGRATIONS = "./examples/basic/migrations"
+DATABASE = "./examples/basic/basic.db"

@@ -84,7 +84,7 @@ pub const Operation = union(OperationCode) {
 
     pub fn decode(lua: *Lua, alloc: std.mem.Allocator, nresults: usize) !Operation {
         assert(nresults > 1);
-        const op_code: OperationCode = @enumFromInt(@as(u8, @intCast(lua.to(Lua.Integer, 1) catch @panic("Not number"))));
+        const op_code: OperationCode = @fromBackingInt(@intCast(@as(u8, @intCast(lua.to(Lua.Integer, 1) catch @panic("Not number")))));
 
         return try switch (op_code) {
             .OPEN => open(lua, nresults),

@@ -3,3 +3,4 @@
 #include "lua_5.4.8/src/lua.h"
 #include "lua_5.4.8/src/luaconf.h"
 #include "lua_5.4.8/src/lualib.h"
+#include "sqlite-amalgamation-3540100/sqlite3.h"

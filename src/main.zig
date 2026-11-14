@@ -177,7 +177,7 @@ inline fn routes(args: parser.Args) !void {
     defer runtime.deinit();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
-    try writer.interface.print("{s}\n", .{"─" ** 50});
+    try writer.interface.print("{s}\n", .{@as([50]u8, @splat('-'))});
 
     runtime.router.?.print(alloc, &writer.interface);
 }

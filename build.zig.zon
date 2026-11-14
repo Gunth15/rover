@@ -3,8 +3,12 @@
     .version = "0.16.0",
     .dependencies = .{
         .zio = .{
-            .url = "./src/vendor/zio-0.19.1",
-            .hash = "zio-0.19.1-xHbVVJXzKwAKLRAABWeDvQG9Dg1kf9FM3haWG0YqtScn",
+            .url = "git+https://github.com/lalinsky/zio?ref=v0.20.1#c0a6b5877c9bbc71d2d2c0b3374ce7fa61a4ec12",
+            .hash = "zio-0.20.1-xHbVVI0wLwDgE2dXWDCWH0UfCQYEhnBYHs1Td12oAGeR",
+        },
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c?ref=zig-0.17.x#cfac21f3199b2b02ce3fd7db652aa456421fe4ab",
+            .hash = "translate_c-2.0.2-Q_BUWvBNBwDnyehSiuAJmdFcMYHYGA-Jc3KiYdrV2Dqx",
         },
     },
     .paths = .{""},

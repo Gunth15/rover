@@ -32,8 +32,8 @@ pub const Partial = struct {
 
     pub inline fn merge(base: Partial, over: Partial) Partial {
         var out = base;
-        inline for (std.meta.fields(Partial)) |f| {
-            if (@field(over, f.name)) |v| @field(out, f.name) = v;
+        inline for (@typeInfo(Partial).@"struct".field_names) |name| {
+            if (@field(over, name)) |v| @field(out, name) = v;
         }
         return out;
     }
@@ -75,7 +75,7 @@ pub const Partial = struct {
         }
         if (try readGlobal(&lua, Lua.String, "MAIN_FILE", .string)) |s| {
             // Copy out of Lua-owned memory before lua.deinit().
-            p.main_file = try alloc.dupeZ(u8, s);
+            p.main_file = try alloc.dupeSentinel(u8, s, 0);
         }
         if (try readGlobal(&lua, Lua.Bool, "SINGLE_THREADED", .bool)) |b| {
             p.single_threaded = b;
@@ -129,7 +129,7 @@ pub fn load(
         .address = merged.address.?,
         .memory = merged.memory,
         .max_read = merged.max_read.?,
-        .main_file = try a.dupeZ(u8, merged.main_file.?),
+        .main_file = try a.dupeSentinel(u8, merged.main_file.?, 0),
         .single_threaded = merged.single_threaded.?,
         .lua_threads = if (merged.single_threaded.?) 1 else merged.lua_threads.?,
     };

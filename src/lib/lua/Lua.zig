@@ -101,9 +101,13 @@ pub fn loadFile(l: *LuaState, file_name: [:0]const u8) LoadError!void {
     }
 }
 //add traceback as msgh
-pub const CallError = error{ RuntimeError, AllocationError, HandlerError,
+pub const CallError = error{
+    RuntimeError,
+    AllocationError,
+    HandlerError,
     //Not realy an error, but somet;hing that can happen
-    Yielded } || TypeError;
+    Yielded,
+} || TypeError;
 //If this function is yielded or an error occurs, you have to use L.yieldresult or l.errorresult() to form the error
 pub fn call(l: *LuaState, func: [:0]const u8, args: anytype, ResultType: type) CallError!ResultType {
     //get Function
@@ -178,7 +182,7 @@ pub fn pushThread(l: *LuaState) void {
     return c.lua_pushthread(l.state);
 }
 pub fn Next(l: *LuaState, index: isize) LuaType {
-    return @enumFromInt(c.lua_next(l.state, @intCast(index)));
+    return @fromBackingInt(@intCast(c.lua_next(l.state, @intCast(index))));
 }
 ///Pops given value to lua
 ///structs are interpretted using their luaTo method, if it one does not exit, it is treated as a table.
@@ -240,7 +244,7 @@ pub fn to(l: *LuaState, T: type, index: isize) TypeError!T {
     }
 }
 pub fn check(l: *LuaState, arg: usize, lua_type: LuaType) void {
-    return c.luaL_checktype(l.state, @intCast(arg), @intFromEnum(lua_type));
+    return c.luaL_checktype(l.state, @intCast(arg), @backingInt(lua_type));
 }
 pub fn catchError(l: *LuaState) String {
     const lua_err = l.to(String, -1) catch @panic("Shold never fail unledd the error was not a string");
@@ -391,7 +395,7 @@ pub fn argCheck(l: *LuaState, cond: bool, arg: usize, msg: [*:0]const u8) void {
     _ = c.luaL_argcheck(l.state, cond, arg, msg.ptr);
 }
 pub fn Luatype(l: *LuaState, index: isize) LuaType {
-    return @enumFromInt(c.lua_type(l.state, @intCast(index)));
+    return @fromBackingInt(@intCast(c.lua_type(l.state, @intCast(index))));
 }
 pub fn checkAny(l: *LuaState, arg: usize) void {
     c.luaL_checkany(l.state, arg);
@@ -430,7 +434,7 @@ pub fn setTable(l: *LuaState, index: isize) void {
     return c.lua_settable(l.state, @as(c_int, index));
 }
 pub fn getTable(l: *LuaState, index: isize) LuaType {
-    return @enumFromInt(c.lua_gettable(l.state, @as(c_int, index)));
+    return @fromBackingInt(@intCast(c.lua_gettable(l.state, @as(c_int, index))));
 }
 pub fn getMetaTable(l: *LuaState, index: usize) error{NotPushed}!void {
     return if (c.lua_getmetatable(l, index) != 0) {} else return error.NotPushed;
@@ -441,7 +445,7 @@ pub fn setMetaTable(l: *LuaState, index: isize) void {
 }
 ///t[n] where to is the table of the given index, the value pushed on top of the stack
 pub fn getI(l: *LuaState, index: isize, n: isize) LuaType {
-    return @enumFromInt(c.lua_geti(l.state, @intCast(index), @as(c.lua_Integer, n)));
+    return @fromBackingInt(@intCast(c.lua_geti(l.state, @intCast(index), @as(c.lua_Integer, n))));
 }
 ///t[i]=v where v is pushed on top of the stack
 pub fn setI(l: *LuaState, index: isize, i: isize) void {
@@ -449,7 +453,7 @@ pub fn setI(l: *LuaState, index: isize, i: isize) void {
 }
 //use these for tables without metadata
 pub fn getRawI(l: *LuaState, index: isize, n: isize) LuaType {
-    return @enumFromInt(c.lua_rawgeti(l.state, @intCast(index), @intCast(n)));
+    return @fromBackingInt(@intCast(c.lua_rawgeti(l.state, @intCast(index), @intCast(n))));
 }
 pub fn setRawI(l: *LuaState, index: isize, i: isize) void {
     c.lua_rawseti(l.state, @as(c_int, index), @as(c_longlong, i));
@@ -463,7 +467,7 @@ pub fn setField(l: *LuaState, index: isize, key: []const u8) void {
 pub fn getField(l: *LuaState, index: isize, name: []const u8) LuaType {
     const abs = c.lua_absindex(l.state, @intCast(index));
     l.push(name);
-    return @enumFromInt(c.lua_gettable(l.state, abs));
+    return @fromBackingInt(@intCast(c.lua_gettable(l.state, abs)));
 }
 pub fn getTop(l: *LuaState) isize {
     return @intCast(c.lua_gettop(l.state));
@@ -472,7 +476,7 @@ pub fn setTop(l: *LuaState, idx: isize) void {
     return c.lua_settop(l.state, @intCast(idx));
 }
 pub fn getGlobal(l: *LuaState, name: [:0]const u8) LuaType {
-    return @enumFromInt(c.lua_getglobal(l.state, name));
+    return @fromBackingInt(@intCast(c.lua_getglobal(l.state, name)));
 }
 pub fn setGlobal(l: *LuaState, name: [:0]const u8) void {
     c.lua_setglobal(l.state, name);
@@ -488,7 +492,7 @@ pub fn ref(l: *LuaState) c_int {
     return c.luaL_ref(l.state, c.LUA_REGISTRYINDEX);
 }
 pub fn getRef(l: *LuaState, reference: c_int) LuaType {
-    return @enumFromInt(c.lua_rawgeti(l.state, c.LUA_REGISTRYINDEX, reference));
+    return @fromBackingInt(@intCast(c.lua_rawgeti(l.state, c.LUA_REGISTRYINDEX, reference)));
 }
 pub fn unref(l: *LuaState, reference: c_int) void {
     return c.luaL_unref(l.state, c.LUA_REGISTRYINDEX, reference);
