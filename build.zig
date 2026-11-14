@@ -72,7 +72,7 @@ fn buildLibRover(
 
     //lua
     mod.addCSourceFiles(.{
-        .root = b.path("src/vendor/lua_5.4.8/src"),
+        .root = b.path("src/vendor/lua-5.4.9/src"),
         .files = &.{
             "lapi.c",     "lcode.c",    "lctype.c",   "ldebug.c",  "ldo.c",
             "ldump.c",    "lfunc.c",    "lgc.c",      "llex.c",    "lmem.c",
