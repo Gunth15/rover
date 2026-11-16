@@ -13,21 +13,20 @@ const Statement = @This();
 pub fn Iterator(T: type) type {
     return struct {
         const Self = @This();
-        stmt: Statement,
+        stmt: *Statement,
         pub fn next(self: *Self) QueryError!bool {
             const ret = c.sqlite3_step(self.stmt.stmt);
 
             if (ret == c.SQLITE_ROW) return true else if (ret == c.SQLITE_DONE) {
-                self.stmt.reset() catch {};
                 return false;
             }
 
             return err.errorFromCode(ret) orelse return false;
         }
-        pub fn row(self: *Self) err.Error!T {
+        pub fn row(self: *Self) TypeError!T {
             return try self.stmt.row(T);
         }
-        pub fn column(self: *Self, i: usize) err.Error!T {
+        pub fn column(self: *Self, i: usize) TypeError!T {
             try self.stmt.column(T, i);
         }
     };
@@ -35,7 +34,7 @@ pub fn Iterator(T: type) type {
 pub inline fn finalize(stmt: *Statement) void {
     _ = c.sqlite3_finalize(stmt.stmt);
 }
-inline fn reset(stmt: *Statement) err.Error!void {
+pub inline fn reset(stmt: *Statement) err.Error!void {
     return err.translate(c.sqlite3_reset(stmt.stmt));
 }
 const TypeError = error{
@@ -77,13 +76,15 @@ pub inline fn column(stmt: *Statement, T: type, i: usize) TypeError!T {
         },
         c.SQLITE_TEXT => {
             if (T != sqlite.Text) return TypeError.ExpectedText;
-            const blob: *const anyopaque = c.sqlite3_column_text(stmt.stmt, i);
-            return sqlite.Text{ .data = @ptrCast(@alignCast(blob)) };
+            const len: u64 = @intCast(c.sqlite3_column_bytes(stmt.stmt, i));
+            const text: [*]const u8 = @ptrCast(@alignCast(c.sqlite3_column_text(stmt.stmt, i)));
+            return sqlite.Text{ .data = text[0..len] };
         },
         c.SQLITE_BLOB => {
             if (T != sqlite.Blob) return TypeError.ExpectedBlob;
-            const blob: *const anyopaque = c.sqlite3_column_blob(stmt.stmt, i);
-            return sqlite.Blob{ .data = @ptrCast(@alignCast(blob)) };
+            const len: u64 = @intCast(c.sqlite3_column_bytes(stmt.stmt, i));
+            const blob: [*]const u8 = @ptrCast(@alignCast(c.sqlite3_column_blob(stmt.stmt, i)));
+            return sqlite.Blob{ .data = blob[0..len] };
         },
         c.SQLITE_NULL => {
             if (info != .optional) return TypeError.NotNullable;
@@ -94,7 +95,6 @@ pub inline fn column(stmt: *Statement, T: type, i: usize) TypeError!T {
 }
 
 pub inline fn exec(stmnt: *Statement) err.Error!void {
-    defer stmnt.reset() catch {};
     return err.translate(c.sqlite3_step(stmnt.stmt));
 }
 //NOTE: blobs and strings are borrowed
@@ -107,7 +107,6 @@ pub inline fn Query(stmnt: *Statement, T: type) Iterator(T) {
 const QueryError = error{} || err.Error || TypeError;
 pub inline fn QueryOnce(stmnt: *Statement, T: type) QueryError!T {
     return err.errorFromCode(c.sqlite3_step(stmnt.stmt)) orelse {
-        defer stmnt.reset() catch {};
         return try stmnt.row(T);
     };
 }
