@@ -178,11 +178,16 @@ fn getJobs(lvm: *LVM, io: std.Io, buff: []Job) !usize {
         const seg: *Segment = @fieldParentPtr("node", node);
 
         while (size < buff.len) : (size += 1) {
-            buff[size] = seg.queue.popFront() orelse {
-                lvm.job_queue.remove(node);
-                lvm.allocator.destroy(seg);
-                break;
-            };
+            buff[size] = seg.queue.popFront() orelse break;
+        }
+
+        // Remove the segment even when the last successful pop was the one
+        // that emptied it. Otherwise a segment that was drained by a batch
+        // that filled `buff` exactly stays linked, making `job_queue.first`
+        // non-null while the queue holds no jobs.
+        if (seg.queue.len == 0) {
+            lvm.job_queue.remove(node);
+            lvm.allocator.destroy(seg);
         }
     }
     return size;
