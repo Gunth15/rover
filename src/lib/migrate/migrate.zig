@@ -14,10 +14,10 @@ const MIGRATION_TEMPLATE =
     \\
 ;
 const CREATE_MIGRATION_TABLE_STATEMENT =
-    \\CREATE TABLE IF NOT EXIST rover_migrations (
+    \\CREATE TABLE IF NOT EXISTS rover_migrations (
     \\  version INTEGER PRIMARY KEY,
     \\  applied_at DATETIME,
-    \\  name TEXT NOT NULL UNIQUE,
+    \\  name TEXT NOT NULL UNIQUE
     \\);
 ;
 
@@ -35,7 +35,7 @@ const GET_CURRENT_VERSION =
 ;
 
 const UPDATE_APPLIED_AT =
-    \\UPDATE migrations
+    \\UPDATE rover_migrations
     \\SET applied_at = CURRENT_TIMESTAMP
     \\WHERE version = ?;
 ;
@@ -130,9 +130,19 @@ const MigrationFile = struct {
     }
 };
 
-inline fn migrationFailure(w: *std.Io.Writer, e: anyerror) void {
-    w.print("Migration command Failed: {s}\n", @errorName(e)) catch {};
+fn printError(w: *std.Io.Writer, e: anyerror) void {
+    w.print("{s}", .{@errorName(e)}) catch {};
+    if (sql.err.messageFromError(e)) |message| {
+        w.print(" (sqlite code {d}: {s})", .{ sql.err.codeFromError(e).?, message }) catch {};
+    }
 }
+
+inline fn migrationFailure(w: *std.Io.Writer, e: anyerror) void {
+    w.writeAll("Migration command Failed: ") catch {};
+    printError(w, e);
+    w.writeAll("\n") catch {};
+}
+
 pub fn create(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -317,7 +327,7 @@ pub fn status(
 
 inline fn initDb(io: std.Io, migration_dir: std.Io.Dir, database_file: [:0]const u8) !sql {
     var db = try sql.open(database_file);
-    defer db.close();
+    errdefer db.close();
 
     try db.exec(CREATE_MIGRATION_TABLE_STATEMENT);
 
@@ -336,20 +346,20 @@ inline fn initDb(io: std.Io, migration_dir: std.Io.Dir, database_file: [:0]const
     return db;
 }
 
-test "create migration file" {
+/// Harness for the "create migration file" test. It keeps the test setup in one
+/// place and reports the SQLite code and message whenever creation fails.
+fn runCreateMigrationFileTest(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+) !void {
     var path_buf: [4096]u8 = undefined;
-    var wbuff: [4096]u8 = undefined;
-    const io = std.testing.io;
-    const allocator = std.testing.allocator;
 
-    var writer = std.Io.File.stdout().writer(io, &wbuff);
-    defer writer.flush() catch {};
-
-    var test_dir = std.testing.tmpDir(.{ .iterate = true });
+    var test_dir = std.testing.tmpDir(.{});
     defer test_dir.cleanup();
 
     try test_dir.dir.createDirPath(io, "./migrations");
-    const migration_dir = try test_dir.dir.openDir(io, "./migrations", .{});
+    const migration_dir = try test_dir.dir.openDir(io, "./migrations", .{ .iterate = true });
 
     const len = try test_dir.dir.realPath(io, &path_buf);
 
@@ -360,7 +370,22 @@ test "create migration file" {
     db_name.appendSliceAssumeCapacity("/database.sql");
     db_name.appendAssumeCapacity(0);
 
-    try create(io, allocator, &writer.interface, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration");
+    create(io, allocator, writer, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration") catch |e| {
+        writer.writeAll("create migration file test failed: ") catch {};
+        printError(writer, e);
+        writer.writeAll("\n") catch {};
+        return e;
+    };
+}
+
+test "create migration file" {
+    const io = std.testing.io;
+    var wbuff: [4096]u8 = undefined;
+
+    var writer = std.Io.File.stderr().writer(io, &wbuff);
+    defer writer.flush() catch {};
+
+    return runCreateMigrationFileTest(io, std.testing.allocator, &writer.interface);
 }
 test "can update db" {}
 test "can rollback db" {}
