@@ -122,6 +122,134 @@ pub fn errorFromCode(code: c_int) ?Error {
     return primaryErrorFromCode(code);
 }
 
+/// Converts an error from this wrapper back into the SQLite result code that
+/// represents it. Returns null when `err` did not come from the SQLite wrapper.
+pub fn codeFromError(err: anyerror) ?c_int {
+    return switch (err) {
+        error.Error => c.SQLITE_ERROR,
+        error.Internal => c.SQLITE_INTERNAL,
+        error.Perm => c.SQLITE_PERM,
+        error.Abort => c.SQLITE_ABORT,
+        error.Busy => c.SQLITE_BUSY,
+        error.Locked => c.SQLITE_LOCKED,
+        error.Nomem => c.SQLITE_NOMEM,
+        error.Readonly => c.SQLITE_READONLY,
+        error.Interrupt => c.SQLITE_INTERRUPT,
+        error.Ioerr => c.SQLITE_IOERR,
+        error.Corrupt => c.SQLITE_CORRUPT,
+        error.Notfound => c.SQLITE_NOTFOUND,
+        error.Full => c.SQLITE_FULL,
+        error.Cantopen => c.SQLITE_CANTOPEN,
+        error.Protocol => c.SQLITE_PROTOCOL,
+        error.Empty => c.SQLITE_EMPTY,
+        error.Schema => c.SQLITE_SCHEMA,
+        error.Toobig => c.SQLITE_TOOBIG,
+        error.Constraint => c.SQLITE_CONSTRAINT,
+        error.Mismatch => c.SQLITE_MISMATCH,
+        error.Misuse => c.SQLITE_MISUSE,
+        error.Nolfs => c.SQLITE_NOLFS,
+        error.Auth => c.SQLITE_AUTH,
+        error.Format => c.SQLITE_FORMAT,
+        error.Range => c.SQLITE_RANGE,
+        error.Notadb => c.SQLITE_NOTADB,
+        error.Notice => c.SQLITE_NOTICE,
+        error.Warning => c.SQLITE_WARNING,
+        // "Unknown" is the fallback for an unrecognised primary code, so the
+        // closest code we can report for it is the generic SQLite error.
+        error.Unknown => c.SQLITE_ERROR,
+
+        error.ErrorMissingCollseq => c.SQLITE_ERROR_MISSING_COLLSEQ,
+        error.ErrorRetry => c.SQLITE_ERROR_RETRY,
+        error.ErrorSnapshot => c.SQLITE_ERROR_SNAPSHOT,
+        error.ErrorReservesize => c.SQLITE_ERROR_RESERVESIZE,
+        error.ErrorKey => c.SQLITE_ERROR_KEY,
+        error.ErrorUnable => c.SQLITE_ERROR_UNABLE,
+        error.IoerrRead => c.SQLITE_IOERR_READ,
+        error.IoerrShortRead => c.SQLITE_IOERR_SHORT_READ,
+        error.IoerrWrite => c.SQLITE_IOERR_WRITE,
+        error.IoerrFsync => c.SQLITE_IOERR_FSYNC,
+        error.IoerrDirFsync => c.SQLITE_IOERR_DIR_FSYNC,
+        error.IoerrTruncate => c.SQLITE_IOERR_TRUNCATE,
+        error.IoerrFstat => c.SQLITE_IOERR_FSTAT,
+        error.IoerrUnlock => c.SQLITE_IOERR_UNLOCK,
+        error.IoerrRdlock => c.SQLITE_IOERR_RDLOCK,
+        error.IoerrDelete => c.SQLITE_IOERR_DELETE,
+        error.IoerrBlocked => c.SQLITE_IOERR_BLOCKED,
+        error.IoerrNomem => c.SQLITE_IOERR_NOMEM,
+        error.IoerrAccess => c.SQLITE_IOERR_ACCESS,
+        error.IoerrCheckreservedlock => c.SQLITE_IOERR_CHECKRESERVEDLOCK,
+        error.IoerrLock => c.SQLITE_IOERR_LOCK,
+        error.IoerrClose => c.SQLITE_IOERR_CLOSE,
+        error.IoerrDirClose => c.SQLITE_IOERR_DIR_CLOSE,
+        error.IoerrShmopen => c.SQLITE_IOERR_SHMOPEN,
+        error.IoerrShmsize => c.SQLITE_IOERR_SHMSIZE,
+        error.IoerrShmlock => c.SQLITE_IOERR_SHMLOCK,
+        error.IoerrShmmap => c.SQLITE_IOERR_SHMMAP,
+        error.IoerrSeek => c.SQLITE_IOERR_SEEK,
+        error.IoerrDeleteNoent => c.SQLITE_IOERR_DELETE_NOENT,
+        error.IoerrMmap => c.SQLITE_IOERR_MMAP,
+        error.IoerrGettemppath => c.SQLITE_IOERR_GETTEMPPATH,
+        error.IoerrConvpath => c.SQLITE_IOERR_CONVPATH,
+        error.IoerrVnode => c.SQLITE_IOERR_VNODE,
+        error.IoerrAuth => c.SQLITE_IOERR_AUTH,
+        error.IoerrBeginAtomic => c.SQLITE_IOERR_BEGIN_ATOMIC,
+        error.IoerrCommitAtomic => c.SQLITE_IOERR_COMMIT_ATOMIC,
+        error.IoerrRollbackAtomic => c.SQLITE_IOERR_ROLLBACK_ATOMIC,
+        error.IoerrData => c.SQLITE_IOERR_DATA,
+        error.IoerrCorruptfs => c.SQLITE_IOERR_CORRUPTFS,
+        error.IoerrInPage => c.SQLITE_IOERR_IN_PAGE,
+        error.IoerrBadkey => c.SQLITE_IOERR_BADKEY,
+        error.IoerrCodec => c.SQLITE_IOERR_CODEC,
+        error.LockedSharedcache => c.SQLITE_LOCKED_SHAREDCACHE,
+        error.LockedVtab => c.SQLITE_LOCKED_VTAB,
+        error.BusyRecovery => c.SQLITE_BUSY_RECOVERY,
+        error.BusySnapshot => c.SQLITE_BUSY_SNAPSHOT,
+        error.BusyTimeout => c.SQLITE_BUSY_TIMEOUT,
+        error.CantopenNotempdir => c.SQLITE_CANTOPEN_NOTEMPDIR,
+        error.CantopenIsdir => c.SQLITE_CANTOPEN_ISDIR,
+        error.CantopenFullpath => c.SQLITE_CANTOPEN_FULLPATH,
+        error.CantopenConvpath => c.SQLITE_CANTOPEN_CONVPATH,
+        error.CantopenDirtywal => c.SQLITE_CANTOPEN_DIRTYWAL,
+        error.CantopenSymlink => c.SQLITE_CANTOPEN_SYMLINK,
+        error.CorruptVtab => c.SQLITE_CORRUPT_VTAB,
+        error.CorruptSequence => c.SQLITE_CORRUPT_SEQUENCE,
+        error.CorruptIndex => c.SQLITE_CORRUPT_INDEX,
+        error.ReadonlyRecovery => c.SQLITE_READONLY_RECOVERY,
+        error.ReadonlyCantlock => c.SQLITE_READONLY_CANTLOCK,
+        error.ReadonlyRollback => c.SQLITE_READONLY_ROLLBACK,
+        error.ReadonlyDbmoved => c.SQLITE_READONLY_DBMOVED,
+        error.ReadonlyCantinit => c.SQLITE_READONLY_CANTINIT,
+        error.ReadonlyDirectory => c.SQLITE_READONLY_DIRECTORY,
+        error.AbortRollback => c.SQLITE_ABORT_ROLLBACK,
+        error.ConstraintCheck => c.SQLITE_CONSTRAINT_CHECK,
+        error.ConstraintCommithook => c.SQLITE_CONSTRAINT_COMMITHOOK,
+        error.ConstraintForeignkey => c.SQLITE_CONSTRAINT_FOREIGNKEY,
+        error.ConstraintFunction => c.SQLITE_CONSTRAINT_FUNCTION,
+        error.ConstraintNotnull => c.SQLITE_CONSTRAINT_NOTNULL,
+        error.ConstraintPrimarykey => c.SQLITE_CONSTRAINT_PRIMARYKEY,
+        error.ConstraintTrigger => c.SQLITE_CONSTRAINT_TRIGGER,
+        error.ConstraintUnique => c.SQLITE_CONSTRAINT_UNIQUE,
+        error.ConstraintVtab => c.SQLITE_CONSTRAINT_VTAB,
+        error.ConstraintRowid => c.SQLITE_CONSTRAINT_ROWID,
+        error.ConstraintPinned => c.SQLITE_CONSTRAINT_PINNED,
+        error.ConstraintDatatype => c.SQLITE_CONSTRAINT_DATATYPE,
+        error.NoticeRecoverWal => c.SQLITE_NOTICE_RECOVER_WAL,
+        error.NoticeRecoverRollback => c.SQLITE_NOTICE_RECOVER_ROLLBACK,
+        error.NoticeRbu => c.SQLITE_NOTICE_RBU,
+        error.WarningAutoindex => c.SQLITE_WARNING_AUTOINDEX,
+        error.AuthUser => c.SQLITE_AUTH_USER,
+        else => null,
+    };
+}
+
+/// Returns SQLite's English-language description for an error from this
+/// wrapper. Uses `codeFromError`, and returns null for non-SQLite errors.
+pub fn messageFromError(err: anyerror) ?[:0]const u8 {
+    const code = codeFromError(err) orelse return null;
+    const message: [*:0]const u8 = @ptrCast(c.sqlite3_errstr(code));
+    return std.mem.span(message);
+}
+
 pub fn primaryErrorFromCode(code: c_int) ?SqliteError {
     return switch (code & 0xff) {
         c.SQLITE_OK, c.SQLITE_ROW, c.SQLITE_DONE => null,
@@ -260,4 +388,37 @@ test "translate returns the most specific error" {
     try std.testing.expectError(error.Unknown, translate(99));
     // unknown extended bits fall back to the primary code
     try std.testing.expectError(error.Busy, translate(c.SQLITE_BUSY | (99 << 8)));
+}
+
+test "codeFromError returns the SQLite result code" {
+    const cases = [_]struct { code: c_int, err: Error }{
+        .{ .code = c.SQLITE_ERROR, .err = error.Error },
+        .{ .code = c.SQLITE_BUSY, .err = error.Busy },
+        .{ .code = c.SQLITE_IOERR, .err = error.Ioerr },
+        .{ .code = c.SQLITE_CONSTRAINT, .err = error.Constraint },
+        .{ .code = c.SQLITE_BUSY_TIMEOUT, .err = error.BusyTimeout },
+        .{ .code = c.SQLITE_IOERR_FSYNC, .err = error.IoerrFsync },
+        .{ .code = c.SQLITE_CONSTRAINT_UNIQUE, .err = error.ConstraintUnique },
+        .{ .code = c.SQLITE_CANTOPEN_SYMLINK, .err = error.CantopenSymlink },
+        .{ .code = c.SQLITE_AUTH_USER, .err = error.AuthUser },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.code, codeFromError(case.err).?);
+        try std.testing.expectEqual(@as(?Error, case.err), errorFromCode(case.code));
+    }
+
+    try std.testing.expectEqual(@as(?c_int, null), codeFromError(error.FileNotFound));
+}
+
+test "messageFromError describes SQLite errors" {
+    try std.testing.expectEqualStrings(
+        std.mem.span(c.sqlite3_errstr(c.SQLITE_BUSY)),
+        messageFromError(error.Busy).?,
+    );
+    try std.testing.expectEqualStrings(
+        std.mem.span(c.sqlite3_errstr(c.SQLITE_CONSTRAINT_UNIQUE)),
+        messageFromError(error.ConstraintUnique).?,
+    );
+    try std.testing.expectEqual(@as(?[:0]const u8, null), messageFromError(error.FileNotFound));
 }
