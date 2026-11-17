@@ -128,7 +128,7 @@ pub fn bind(stmnt: *Statement, idx: usize, value: anytype) err.Error!void {
         .float, .comptime_float => stmnt.bindDouble(idx, value),
         .null => stmnt.bindNull(idx),
         .optional => if (value) |v| stmnt.bind(v) else stmnt.bindNull(idx),
-        .@"struct" => if (@TypeOf(value) == Blob) stmnt.bindBlob(idx, value.data) else if (@TypeOf(value) == Text) stmnt.bindBlob(idx, value.data) else @compileError("Unsupported type"),
+        .@"struct" => if (@TypeOf(value) == Blob) stmnt.bindBlob(idx, value.data) else if (@TypeOf(value) == Text) stmnt.bindText(idx, value.data) else @compileError("Unsupported type"),
         else => @compileError("Unsupported type"),
     };
 }
@@ -136,10 +136,11 @@ pub inline fn bindText(stmnt: *Statement, idx: usize, value: []const u8) err.Err
     return err.translate(
         c.sqlite3_bind_text64(
             stmnt.stmt,
-            idx,
-            value,
+            @intCast(idx),
+            value.ptr,
             value.len,
             c.SQLITE_TRANSIENT,
+            c.SQLITE_UTF8,
         ),
     );
 }
@@ -147,7 +148,7 @@ pub inline fn bindBlob(stmnt: *Statement, idx: usize, value: []const u8) err.Err
     return err.translate(
         c.sqlite3_bind_blob64(
             stmnt.stmt,
-            idx,
+            @intCast(idx),
             value,
             value.len,
             c.SQLITE_TRANSIENT,
@@ -167,7 +168,7 @@ pub inline fn bindDouble(stmnt: *Statement, idx: usize, double: f64) err.Error!v
     return err.translate(
         c.sqlite3_bind_double(
             stmnt.stmt,
-            idx,
+            @intCast(idx),
             double,
         ),
     );
@@ -176,7 +177,7 @@ pub inline fn bindNull(stmnt: *Statement, idx: usize) err.Error!void {
     return err.translate(
         c.sqlite3_bind_null(
             stmnt.stmt,
-            idx,
+            @intCast(idx),
         ),
     );
 }

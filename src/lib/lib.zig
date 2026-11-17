@@ -12,6 +12,7 @@ pub const Logger = @import("Logger.zig");
 pub const Config = @import("Config.zig");
 pub const operation = @import("operation.zig");
 pub const Sqlite = @import("sqlite/sqlite3.zig");
+pub const migrate = @import("migrate/migrate.zig");
 test {
     _ = @import("util/util.zig");
     _ = @import("httpparser/httpparser.zig");
@@ -27,4 +28,5 @@ test {
     _ = @import("Logger.zig");
     _ = @import("operation.zig");
     _ = @import("sqlite/sqlite3.zig");
+    _ = @import("migrate/migrate.zig");
 }
