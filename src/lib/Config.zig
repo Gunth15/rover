@@ -2,7 +2,6 @@ const std = @import("std");
 const Io = std.Io;
 const lib = @import("lib.zig");
 const Lua = lib.Lua;
-const cli = lib.Util.parser;
 
 const Config = @This();
 
@@ -21,71 +20,66 @@ pub const Error = error{
     LuaError,
 } || std.mem.Allocator.Error;
 
-// ---- A single source of settings ------------------------------------------
-pub const Partial = struct {
-    address: ?std.Io.net.IpAddress = null,
-    memory: ?usize = null,
-    max_read: ?usize = null,
-    main_file: ?[:0]const u8 = null,
-    single_threaded: ?bool = null,
-    lua_threads: ?usize = null,
+pub const default_path: [:0]const u8 = "config.lua";
 
-    pub inline fn merge(base: Partial, over: Partial) Partial {
-        var out = base;
-        inline for (@typeInfo(Partial).@"struct".field_names) |name| {
-            if (@field(over, name)) |v| @field(out, name) = v;
-        }
-        return out;
+/// Start from the built-in defaults. Call `applyFile` and then apply any
+/// command-line overrides to resolve the final configuration.
+pub fn init() Config {
+    return .{
+        .arena = .init(std.heap.page_allocator),
+        .address = std.Io.net.IpAddress.parse("127.0.0.1", 8080) catch unreachable,
+        .memory = null,
+        .max_read = 4096,
+        .main_file = "main.lua",
+        .single_threaded = false,
+        .lua_threads = std.Thread.getCpuCount() catch 1,
+    };
+}
+
+pub fn deinit(config: *Config) void {
+    config.arena.deinit();
+}
+
+/// Apply settings from a Lua config file over the current values.
+/// A missing file leaves the configuration unchanged.
+pub fn applyFile(config: *Config, file_path: [:0]const u8) Error!void {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const f = Io.Dir.cwd().openFile(io, file_path, .{ .path_only = true }) catch return;
+    f.close(io);
+
+    var alloc = config.arena.allocator();
+    var lua = Lua.init(.{ .allocator = &alloc }) catch return error.LuaError;
+    defer lua.deinit();
+
+    lua.doFile(file_path) catch {
+        const msg = lua.to(Lua.String, -1) catch "unknown error";
+        std.log.err("Error loading config file {s}: {s}", .{ file_path, msg });
+        return error.LuaError;
+    };
+
+    if (try readGlobal(&lua, Lua.String, "ADDRESS", .string)) |s| {
+        config.address = std.Io.net.IpAddress.parseLiteral(s) catch return error.InvalidAddress;
     }
-
-    pub inline fn fromArgs(args: cli.Args) Partial {
-        return .{
-            .address = args.addr,
-            .memory = args.memory,
-            .max_read = args.read,
-            .main_file = args.file,
-            .single_threaded = args.single_threaded,
-            .lua_threads = args.lua_threads,
-        };
+    if (try readGlobal(&lua, Lua.Integer, "MEMORY", .number)) |n| {
+        config.memory = std.math.cast(usize, n) orelse return error.OutOfRange;
     }
-
-    pub inline fn fromLua(io: std.Io, alloc: std.mem.Allocator, file_path: [:0]const u8) Error!Partial {
-        const f = Io.Dir.cwd().openFile(io, file_path, .{ .path_only = true }) catch return .{};
-        f.close(io);
-
-        var lua = Lua.init(.{ .allocator = &alloc }) catch return error.LuaError;
-        defer lua.deinit();
-
-        lua.doFile(file_path) catch {
-            const msg = lua.to(Lua.String, -1) catch "unknown error";
-            std.log.err("Error loading config file {s}: {s}", .{ file_path, msg });
-            return error.LuaError;
-        };
-
-        var p: Partial = .{};
-
-        if (try readGlobal(&lua, Lua.String, "ADDRESS", .string)) |s| {
-            p.address = std.Io.net.IpAddress.parseLiteral(s) catch return error.InvalidAddress;
-        }
-        if (try readGlobal(&lua, Lua.Integer, "MEMORY", .number)) |n| {
-            p.memory = std.math.cast(usize, n) orelse return error.OutOfRange;
-        }
-        if (try readGlobal(&lua, Lua.Integer, "MAX_READ", .number)) |n| {
-            p.max_read = std.math.cast(usize, n) orelse return error.OutOfRange;
-        }
-        if (try readGlobal(&lua, Lua.String, "MAIN_FILE", .string)) |s| {
-            // Copy out of Lua-owned memory before lua.deinit().
-            p.main_file = try alloc.dupeSentinel(u8, s, 0);
-        }
-        if (try readGlobal(&lua, Lua.Bool, "SINGLE_THREADED", .bool)) |b| {
-            p.single_threaded = b;
-        }
-        if (try readGlobal(&lua, Lua.Integer, "LUA_THREADS", .number)) |n| {
-            p.lua_threads = std.math.cast(usize, n) orelse return error.OutOfRange;
-        }
-        return p;
+    if (try readGlobal(&lua, Lua.Integer, "MAX_READ", .number)) |n| {
+        config.max_read = std.math.cast(usize, n) orelse return error.OutOfRange;
     }
-};
+    if (try readGlobal(&lua, Lua.String, "MAIN_FILE", .string)) |s| {
+        // Copy out of Lua-owned memory before lua.deinit().
+        config.main_file = try config.arena.allocator().dupeSentinel(u8, s, 0);
+    }
+    if (try readGlobal(&lua, Lua.Bool, "SINGLE_THREADED", .bool)) |b| {
+        config.single_threaded = b;
+    }
+    if (try readGlobal(&lua, Lua.Integer, "LUA_THREADS", .number)) |n| {
+        config.lua_threads = std.math.cast(usize, n) orelse return error.OutOfRange;
+    }
+}
 
 inline fn readGlobal(lua: *Lua, comptime T: type, name: [:0]const u8, expected: Lua.LuaType) Error!?T {
     const tag = lua.getGlobal(name);
@@ -98,43 +92,21 @@ inline fn readGlobal(lua: *Lua, comptime T: type, name: [:0]const u8, expected: 
     return lua.to(T, -1) catch error.WrongType;
 }
 
-inline fn defaults() Partial {
-    return .{
-        .address = std.Io.net.IpAddress.parse("127.0.0.1", 8080) catch unreachable,
-        .memory = null,
-        .max_read = 4096,
-        .main_file = "main.lua",
-        .single_threaded = false,
-        .lua_threads = std.Thread.getCpuCount() catch 1,
-    };
+test "defaults are resolved without a config file" {
+    var config = init();
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), config.memory);
+    try std.testing.expectEqual(@as(usize, 4096), config.max_read);
+    try std.testing.expectEqualStrings("main.lua", config.main_file);
+    try std.testing.expect(!config.single_threaded);
 }
 
-pub fn load(
-    config_path: [:0]const u8,
-    cli_partial: Partial,
-) Error!Config {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    errdefer arena.deinit();
-    const a = arena.allocator();
+test "missing config file leaves defaults intact" {
+    var config = init();
+    defer config.deinit();
+    try config.applyFile("this-file-does-not-exist.lua");
 
-    var threaded = std.Io.Threaded.init_single_threaded;
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const lua_partial = try Partial.fromLua(io, a, config_path);
-    const merged = defaults().merge(lua_partial).merge(cli_partial);
-
-    return .{
-        .arena = arena,
-        .address = merged.address.?,
-        .memory = merged.memory,
-        .max_read = merged.max_read.?,
-        .main_file = try a.dupeSentinel(u8, merged.main_file.?, 0),
-        .single_threaded = merged.single_threaded.?,
-        .lua_threads = if (merged.single_threaded.?) 1 else merged.lua_threads.?,
-    };
-}
-
-pub fn deinit(config: *Config) void {
-    config.arena.deinit();
+    try std.testing.expectEqual(@as(usize, 4096), config.max_read);
+    try std.testing.expectEqualStrings("main.lua", config.main_file);
 }

@@ -7,102 +7,50 @@ const route = lib.Router;
 const Router = route.Router(c_int, .{ .lua = true });
 const parser = lib.Util.parser;
 const Config = lib.Config;
-const main_log = @import("std").log.scoped(.start_up);
 
 var SHUTDOWN = false;
 
-const HELP =
-    \\Rover 0.0.1
-    \\Cameron W.
-    \\
-    \\Usage: rover <command> [options]
-    \\
-    \\Commands:
-    \\  run                 Runs a Rover program(defaults to main.lua)
-    \\  help                Show all commands
-    \\  routes              Displays all routes
-    \\  tests               Runs test out of the test directory(defaults to ./test)
-    \\  config              Print the current configuration
-    \\
-;
-const HELPRUN =
-    \\Rover 0.0.1
-    \\Cameron W.
-    \\
-    \\Usage:
-    \\  rover run [options]
-    \\
-    \\Options:
-    \\  -m, --memory <bytes>      Limits memory allocations made by the entire process.
-    \\  -c, --config <path>       Specify config file
-    \\  -r, --read <bytes>        Max read buffer per connection (rounded to power of two)
-    \\  -f, --file <path>         Lua script to execute
-    \\  -a, --addr <addr:port>    Address to bind (e.g. 127.0.0.1:8080)
-    \\  -s, --single_threaded     Runs server in single threaded mode
-    \\  -l, --lua_threads         Number of threads dedicated to lua workers
-    \\  -h, --help                Show this help message
-    \\
-;
-const HELPROUTES =
-    \\Rover 0.0.1
-    \\Cameron W.
-    \\
-    \\Usage:
-    \\  rover routes [options]
-    \\
-    \\Options:
-    \\  -f, --file <path>         Lua script to execute
-    \\  -h, --help                Show this help message
-    \\
-;
-
-const HELPTEST =
-    \\Rover 0.0.1
-    \\Cameron W.
-    \\
-    \\Usage:
-    \\  rover tests [options]
-    \\
-    \\Options:
-    \\  -d, --dir <dir>         Directory to look for test
-    \\  -h, --help              Show this help message
-    \\
-;
-const HELPCONFIG =
-    \\Rover 0.0.1
-    \\Cameron W.
-    \\
-    \\Usage:
-    \\  rover config 
-    \\
-    \\Options:
-    \\  -c, --config <path>       Specify config file
-;
-
 pub fn main(init: std.process.Init.Minimal) !void {
-    const args = parser.parse(init.args);
-    switch (args.command) {
-        .help => return help(),
-        .run => return run(args),
-        .routes => return routes(args),
-        .tests => return tests(args),
-        .config => return config(args),
+    switch (parser.parse(init.args)) {
+        .command => |args| switch (args) {
+            .help => |help_args| printHelp(help_args.topic),
+            .run => |run_args| try run(run_args),
+            .routes => |routes_args| try routes(routes_args),
+            .tests => |tests_args| try tests(tests_args),
+            .config => |config_args| try config(config_args),
+        },
+        .help => |topic| printHelp(topic),
+        .invalid => std.process.exit(2),
     }
 }
 
-inline fn fatal(comptime fmt: []const u8, args: anytype, status: u8) noreturn {
-    main_log.err(fmt, args);
-    std.process.exit(status);
+fn printHelp(topic: ?parser.Command) void {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const text = switch (topic orelse .help) {
+        .help => parser.help_general,
+        .run => parser.help_run,
+        .routes => parser.help_routes,
+        .tests => parser.help_tests,
+        .config => parser.help_config,
+    };
+    std.Io.File.stdout().writeStreamingAll(io, text) catch {};
 }
 
-inline fn run(args: parser.Args) !void {
-    if (args.help) {
-        var threaded = std.Io.Threaded.init_single_threaded;
-        std.Io.File.stdout().writeStreamingAll(threaded.io(), HELPRUN) catch {};
-    }
+inline fn run(args: parser.RunArgs) !void {
+    const config_path = args.config_path orelse Config.default_path;
 
-    var conf = try Config.load(args.config, .fromArgs(args));
+    var conf = Config.init();
     defer conf.deinit();
+    try conf.applyFile(config_path);
+
+    if (args.main_file) |main_file| conf.main_file = main_file;
+    if (args.memory) |memory| conf.memory = memory;
+    if (args.max_read) |max_read| conf.max_read = max_read;
+    if (args.address) |address| conf.address = address;
+    if (args.single_threaded) |single_threaded| conf.single_threaded = single_threaded;
+    if (args.lua_threads) |lua_threads| conf.lua_threads = lua_threads;
+    if (conf.single_threaded) conf.lua_threads = 1;
 
     lib.Util.ctrlC.init();
 
@@ -132,7 +80,7 @@ inline fn run(args: parser.Args) !void {
     });
     defer runtime.deinit();
 
-    try runtime.initVms(conf.main_file, args.config);
+    try runtime.initVms(conf.main_file, config_path);
 
     try lib.Logger.init(io, .{ .level = .TRACE });
     defer lib.Logger.Instance.deinit();
@@ -141,23 +89,13 @@ inline fn run(args: parser.Args) !void {
     try runtime.serve(conf.address, .fromMilliseconds(500));
 }
 
-inline fn help() !void {
-    var threaded = std.Io.Threaded.init_single_threaded;
-    const io = threaded.io();
+inline fn routes(args: parser.RoutesArgs) !void {
+    const config_path = args.config_path orelse Config.default_path;
 
-    std.Io.File.stdout().writeStreamingAll(io, HELP) catch {};
-    return;
-}
-
-inline fn routes(args: parser.Args) !void {
-    if (args.help) {
-        var threaded = std.Io.Threaded.init_single_threaded;
-        const io = threaded.io();
-        std.Io.File.stdout().writeStreamingAll(io, HELPROUTES) catch {};
-    }
-
-    var conf = try Config.load(args.config, .fromArgs(args));
+    var conf = Config.init();
     defer conf.deinit();
+    try conf.applyFile(config_path);
+    if (args.main_file) |main_file| conf.main_file = main_file;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -173,7 +111,7 @@ inline fn routes(args: parser.Args) !void {
 
     var runtime: Runtime = try .init(alloc, io, .{});
 
-    try runtime.initVms(conf.main_file, args.config);
+    try runtime.initVms(conf.main_file, config_path);
     defer runtime.deinit();
 
     try writer.interface.print("{s:<10} {s}\n", .{ "METHOD", "PATH" });
@@ -182,16 +120,7 @@ inline fn routes(args: parser.Args) !void {
     runtime.router.?.print(alloc, &writer.interface);
 }
 
-inline fn tests(args: parser.Args) !void {
-    if (args.help) {
-        var threaded = std.Io.Threaded.init_single_threaded;
-        const io = threaded.io();
-        std.Io.File.stdout().writePositionalAll(io, HELPTEST, 0) catch {};
-    }
-
-    var conf = try Config.load(args.config, .fromArgs(args));
-    defer conf.deinit();
-
+inline fn tests(args: parser.TestsArgs) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -203,13 +132,12 @@ inline fn tests(args: parser.Args) !void {
     var runtime: Runtime = try .init(alloc, io, .{});
     defer runtime.deinit();
 
-    //TODO: test file needs to be converted in conf
     //TODO: test not working right now
-    try runtime.runTestMode("test");
+    try runtime.runTestMode(args.test_dir orelse "test");
 }
 
 //TODO: make config file a genral setting
-inline fn config(args: parser.Args) !void {
+inline fn config(args: parser.ConfigArgs) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -218,11 +146,9 @@ inline fn config(args: parser.Args) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    if (args.help) std.Io.File.stdout().writePositionalAll(io, HELPCONFIG, 0) catch {};
-
     var runtime: Runtime = try .init(alloc, io, .{});
     defer runtime.deinit();
 
-    try runtime.initVms(null, args.config);
+    try runtime.initVms(null, args.config_path orelse Config.default_path);
     try runtime.printConfigFile();
 }
