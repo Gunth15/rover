@@ -1,6 +1,6 @@
 const std = @import("std");
 const lib = @import("../lib.zig");
-const sql = lib.Sqlite;
+const Sql = lib.Sqlite;
 const MIGRATION_TEMPLATE =
     \\-- RoverUp
     \\
@@ -71,8 +71,8 @@ const GET_ALL_MIGRATIONS =
 
 const MigrationRow = struct {
     version: u64,
-    name: sql.Text,
-    applied_at: ?sql.Text,
+    name: Sql.Text,
+    applied_at: ?Sql.Text,
 };
 const MigrationFile = struct {
     const Token = enum {
@@ -84,42 +84,40 @@ const MigrationFile = struct {
     up: []const u8,
     down: []const u8,
     fn parse(r: *std.Io.Reader, allocator: std.mem.Allocator) !MigrationFile {
-        var alloc_writer: std.Io.Writer.Allocating = try .init(allocator);
+        var alloc_writer: std.Io.Writer.Allocating = .init(allocator);
         defer alloc_writer.deinit();
 
-        const token: Token = .begin;
+        const RoverUp = "-- RoverUp\n";
+        const RoverDown = "-- RoverDown\n";
 
         var mfile: MigrationFile = undefined;
-        token: switch (token) {
+        token: switch (Token.begin) {
             .begin => {
-                if (std.mem.eql(u8, "-- RoverUp\n", try r.peek(11))) {
-                    r.toss(11);
-                    token = .rover_up;
-                    break :token token;
-                } else try r.streamExact(&alloc_writer.writer, 11);
+                if (std.mem.eql(u8, RoverUp, try r.peek(RoverUp.len))) {
+                    r.toss(RoverUp.len);
+                    continue :token .rover_up;
+                }
                 _ = try r.streamDelimiter(&alloc_writer.writer, '\n');
-                break :token token;
+                _ = try r.streamExact(&alloc_writer.writer, 1);
+                continue :token .begin;
             },
             .rover_up => {
-                if (std.mem.eql(u8, "-- RoverDown\n", try r.peek(13))) {
-                    r.toss(13);
+                if (std.mem.eql(u8, RoverDown, try r.peek(RoverDown.len))) {
+                    r.toss(RoverDown.len);
                     mfile.up = try alloc_writer.toOwnedSlice();
                     alloc_writer.clearRetainingCapacity();
-                    token = .rover_down;
-                    break :token token;
-                } else try r.streamExact(&alloc_writer.writer, 13);
+                    continue :token .rover_down;
+                }
                 _ = try r.streamDelimiter(&alloc_writer.writer, '\n');
-                break :token token;
+                _ = try r.streamExact(&alloc_writer.writer, 1);
+                continue :token .rover_up;
             },
             .rover_down => {
                 _ = try r.streamRemaining(&alloc_writer.writer);
                 mfile.down = try alloc_writer.toOwnedSlice();
-                token = .eof;
-                break :token token;
+                continue :token .eof;
             },
-            .eof => {
-                return mfile;
-            },
+            .eof => return mfile,
         }
         unreachable;
     }
@@ -130,140 +128,68 @@ const MigrationFile = struct {
     }
 };
 
-fn printError(w: *std.Io.Writer, e: anyerror) void {
-    w.print("{s}", .{@errorName(e)}) catch {};
-    if (sql.err.messageFromError(e)) |message| {
-        w.print(" (sqlite code {d}: {s})", .{ sql.err.codeFromError(e).?, message }) catch {};
-    }
-}
-
 inline fn migrationFailure(w: *std.Io.Writer, e: anyerror) void {
     w.writeAll("Migration command Failed: ") catch {};
-    printError(w, e);
+    w.print("{s}", .{@errorName(e)}) catch {};
+    if (Sql.err.messageFromError(e)) |message| {
+        w.print(" (Sqlite code {d}: {s})", .{ Sql.err.codeFromError(e).?, message }) catch {};
+    }
     w.writeAll("\n") catch {};
 }
 
 pub fn create(
     io: std.Io,
-    allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
     migration_dir: std.Io.Dir,
     database_file: [:0]const u8,
     filename: []const u8,
 ) !void {
     //TODO: remove allocator requirment since filames can only be 256 characters realistically
-    writer.writeAll("[1/4] Checking database integrity\n") catch {};
-
     var db = try initDb(io, migration_dir, database_file);
     defer db.close();
 
-    writer.writeAll("[2/4] Updating migration directory\n") catch {};
-    var fname: std.ArrayList(u8) = .empty;
-    defer fname.deinit(allocator);
+    var name_buff: [256]u8 = undefined;
+    var fname: std.ArrayList(u8) = .initBuffer(&name_buff);
 
     var v_stmt = try db.prepare(GET_CURRENT_VERSION);
     defer v_stmt.finalize();
 
     const version = (try v_stmt.QueryOnce(struct { u64 })).@"0";
 
-    try fname.print(allocator, "{d:0>4}_{s}.sql", .{ version, filename });
+    try fname.printBounded("{d:0>4}_{s}.sql", .{ version, filename });
 
     const new_migration = try migration_dir.createFile(io, fname.items, .{});
     defer new_migration.close(io);
     try new_migration.writeStreamingAll(io, MIGRATION_TEMPLATE);
 
-    writer.writeAll("[3/4] Committing migration\n") catch {};
     var add_stmt = try db.prepare(ADD_MIGRATION);
     defer add_stmt.finalize();
 
-    try add_stmt.bind(1, sql.Text{ .data = fname.items });
+    try add_stmt.bind(1, Sql.Text{ .data = fname.items });
     try add_stmt.exec();
-
-    writer.writeAll("[4/4] Creation success\n") catch {};
 }
 pub fn upTo(
     io: std.Io,
     alllocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    migration_dir: std.Io.Dir,
-    database_file: [:0]const u8,
-    version: u64,
-) void {
-    var rbuff: [4096]u8 = undefined;
-    writer.writeAll("[1/4] Checking database integrity\n") catch {};
-    var db = initDb(io, migration_dir, database_file) catch |e| return migrationFailure(writer, e);
-    defer db.close();
-
-    writer.writeAll("[2/4] Querying migrations\n") catch {};
-    var get_smt = db.prepare(GET_MIGRATIONS_UP_TO_N) catch |e| migrationFailure(writer, e);
-    defer get_smt.finalize();
-
-    get_smt.bind(1, version) catch |e| migrationFailure(writer, e);
-
-    var iter = get_smt.Query(MigrationRow) catch |e| migrationFailure(writer, e);
-
-    var update_smt = db.prepare(UPDATE_APPLIED_AT) catch |e| migrationFailure(writer, e);
-    defer update_smt.finalize();
-
-    writer.writeAll("[3/4] Applying migrations\n") catch {};
-    while (iter.next() catch |e| migrationFailure(writer, e)) {
-        defer update_smt.reset();
-
-        const row: MigrationRow = iter.row() catch |e| migrationFailure(writer, e);
-
-        //if not applied, apply it
-        if (row.applied_at != null) continue;
-
-        //Parse Migration file
-        const fname = row.name;
-
-        // Run necesarry migration
-        const file = migration_dir.openFile(io, fname, .{}) catch |e| migrationFailure(writer, e);
-        defer file.close(io);
-
-        var reader = try file.reader(io, &rbuff);
-
-        var migration = MigrationFile.parse(&reader, alllocator) catch |e| migrationFailure(writer, e);
-        defer migration.deinit(alllocator);
-
-        db.exec(migration.up) catch |e| migrationFailure(writer, e);
-
-        //Update migration table
-        update_smt.bind(1, row.version) catch |e| migrationFailure(writer, e);
-        update_smt.exec() catch |e| migrationFailure(writer, e);
-    }
-    writer.print("[4/4] Database upgraded, databse version: {d}\n", .{version}) catch {};
-}
-
-pub fn downTo(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
     migration_dir: std.Io.Dir,
     database_file: [:0]const u8,
     version: u64,
 ) !void {
     var rbuff: [4096]u8 = undefined;
-    writer.writeAll("[1/4] Checking database integrity\n") catch {};
-    var db = initDb(io, migration_dir, database_file) catch |e| return migrationFailure(writer, e);
+    var db = try initDb(io, migration_dir, database_file);
     defer db.close();
 
-    writer.writeAll("[2/4] Querying migrations\n") catch {};
-    var get_smt = db.prepare(GET_MIGRATIONS_DOWN_TO_N) catch |e| migrationFailure(writer, e);
+    var get_smt = try db.prepare(GET_MIGRATIONS_UP_TO_N);
     defer get_smt.finalize();
 
-    get_smt.bind(1, version) catch |e| migrationFailure(writer, e);
+    try get_smt.bind(1, version);
 
-    var iter = get_smt.Query(MigrationRow) catch |e| migrationFailure(writer, e);
+    var iter = get_smt.Query(MigrationRow);
 
-    var del_smt = db.prepare() catch |e| migrationFailure(writer, e);
-    defer del_smt.finalize();
+    var update_smt = try db.prepare(UPDATE_APPLIED_AT);
+    defer update_smt.finalize();
 
-    writer.writeAll("[3/4] Rolling back migrations\n") catch {};
-    while (iter.next() catch |e| migrationFailure(writer, e)) {
-        defer del_smt.reset();
-
-        const row: MigrationRow = iter.row() catch |e| migrationFailure(writer, e);
+    while (try iter.next()) {
+        const row: MigrationRow = try iter.row();
 
         //if not applied, apply it
         if (row.applied_at != null) continue;
@@ -272,21 +198,69 @@ pub fn downTo(
         const fname = row.name;
 
         // Run necesarry migration
-        const file = migration_dir.openFile(io, fname, .{}) catch |e| migrationFailure(writer, e);
+        const file = try migration_dir.openFile(io, fname.data, .{});
         defer file.close(io);
 
-        var reader = try file.reader(io, &rbuff);
+        var reader = file.reader(io, &rbuff);
 
-        var migration = MigrationFile.parse(&reader, allocator) catch |e| migrationFailure(writer, e);
-        defer migration.deinit(allocator);
+        var migration = try MigrationFile.parse(&reader.interface, alllocator);
+        defer migration.deinit(alllocator);
 
-        db.exec(migration.down) catch |e| migrationFailure(writer, e);
+        try db.exec(migration.up);
 
         //Update migration table
-        del_smt.bind(1, row.version) catch |e| migrationFailure(writer, e);
-        del_smt.exec() catch |e| migrationFailure(writer, e);
+        try update_smt.bind(1, row.version);
+        try update_smt.exec();
+        try update_smt.reset();
     }
-    writer.print("[4/4] Database rolled back, databse version: {d}\n", .{version}) catch {};
+}
+
+pub fn downTo(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    migration_dir: std.Io.Dir,
+    database_file: [:0]const u8,
+    version: u64,
+) !void {
+    var rbuff: [4096]u8 = undefined;
+    var db = try initDb(io, migration_dir, database_file);
+    defer db.close();
+
+    var get_smt = try db.prepare(GET_MIGRATIONS_DOWN_TO_N);
+    defer get_smt.finalize();
+
+    try get_smt.bind(1, version);
+
+    var iter = get_smt.Query(MigrationRow);
+
+    var del_smt = try db.prepare(DELETE_MIGRATION);
+    defer del_smt.finalize();
+
+    while (try iter.next()) {
+        const row: MigrationRow = try iter.row();
+
+        //if not applied, apply it
+        if (row.applied_at != null) continue;
+
+        //Parse Migration file
+        const fname = row.name;
+
+        // Run necesarry migration
+        const file = try migration_dir.openFile(io, fname.data, .{});
+        defer file.close(io);
+
+        var reader = file.reader(io, &rbuff);
+
+        var migration = try MigrationFile.parse(&reader.interface, allocator);
+        defer migration.deinit(allocator);
+
+        try db.exec(migration.down);
+
+        //Update migration table
+        try del_smt.bind(1, row.version);
+        try del_smt.exec();
+        try del_smt.reset();
+    }
 }
 pub fn getVersion(
     io: std.Io,
@@ -294,12 +268,12 @@ pub fn getVersion(
     migration_dir: std.Io.Dir,
     database_file: [:0]const u8,
 ) !void {
-    var db = initDb(io, migration_dir, database_file) catch |e| migrationFailure(writer, e);
+    var db = try initDb(io, migration_dir, database_file);
 
-    var stmt = db.prepare(GET_CURRENT_VERSION) catch |e| migrationFailure(writer, e);
+    var stmt = try db.prepare(GET_CURRENT_VERSION);
     defer stmt.finalize();
 
-    const version, _ = stmt.QueryOnce(struct { u64 }) catch |e| migrationFailure(writer, e);
+    const version, _ = try stmt.QueryOnce(struct { u64 });
     writer.print("Database version: {d:0>4}\n", .{version});
 }
 pub fn status(
@@ -308,16 +282,16 @@ pub fn status(
     migration_dir: std.Io.Dir,
     database_file: [:0]const u8,
 ) !void {
-    var db = initDb(io, migration_dir, database_file) catch |e| migrationFailure(writer, e);
+    var db = try initDb(io, migration_dir, database_file);
 
-    var stmt = db.prepare(GET_ALL_MIGRATIONS) catch |e| migrationFailure(writer, e);
+    var stmt = try db.prepare(GET_ALL_MIGRATIONS);
     defer stmt.finalize();
 
     writer.writeAll("Applied At                  Migration  \n") catch {};
     writer.writeAll("=======================================\n") catch {};
     const iter = stmt.Query(MigrationRow);
-    while (iter.next() catch |e| migrationFailure(writer, e)) {
-        const mig = iter.row() catch |e| migrationFailure(writer, e);
+    while (try iter.next()) {
+        const mig = try iter.row();
         writer.print("{s} -- {s}\n", .{
             mig.applied_at.?,
             mig.name,
@@ -325,8 +299,8 @@ pub fn status(
     }
 }
 
-inline fn initDb(io: std.Io, migration_dir: std.Io.Dir, database_file: [:0]const u8) !sql {
-    var db = try sql.open(database_file);
+inline fn initDb(io: std.Io, migration_dir: std.Io.Dir, database_file: [:0]const u8) !Sql {
+    var db = try Sql.open(database_file);
     errdefer db.close();
 
     try db.exec(CREATE_MIGRATION_TABLE_STATEMENT);
@@ -339,54 +313,121 @@ inline fn initDb(io: std.Io, migration_dir: std.Io.Dir, database_file: [:0]const
         var add_stmt = try db.prepare(ADD_MIGRATION);
         defer add_stmt.finalize();
 
-        try add_stmt.bind(1, sql.Text{ .data = filename });
+        try add_stmt.bind(1, Sql.Text{ .data = filename });
         try add_stmt.exec();
     }
 
     return db;
 }
 
-/// Harness for the "create migration file" test. It keeps the test setup in one
-/// place and reports the SQLite code and message whenever creation fails.
-fn runCreateMigrationFileTest(
+fn initTestEnvironment(
     io: std.Io,
     allocator: std.mem.Allocator,
-    writer: *std.Io.Writer,
-) !void {
+) !struct { std.testing.TmpDir, std.Io.Dir, std.ArrayList(u8) } {
     var path_buf: [4096]u8 = undefined;
 
     var test_dir = std.testing.tmpDir(.{});
-    defer test_dir.cleanup();
 
     try test_dir.dir.createDirPath(io, "./migrations");
+    errdefer test_dir.cleanup();
+
     const migration_dir = try test_dir.dir.openDir(io, "./migrations", .{ .iterate = true });
 
     const len = try test_dir.dir.realPath(io, &path_buf);
 
     var db_name: std.ArrayList(u8) = try .initCapacity(allocator, 4096 + 14);
-    defer db_name.deinit(allocator);
+    errdefer db_name.deinit(allocator);
 
     db_name.appendSliceAssumeCapacity(path_buf[0..len]);
     db_name.appendSliceAssumeCapacity("/database.sql");
     db_name.appendAssumeCapacity(0);
 
-    create(io, allocator, writer, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration") catch |e| {
-        writer.writeAll("create migration file test failed: ") catch {};
-        printError(writer, e);
-        writer.writeAll("\n") catch {};
+    return .{ test_dir, migration_dir, db_name };
+}
+
+const TEST_MIGRATION =
+    \\-- RoverUp
+    \\CREATE TABLE books (
+    \\    id INTEGER PRIMARY KEY,
+    \\    title TEXT NOT NULL,
+    \\    author TEXT
+    \\);
+    \\
+    \\-- RoverDown
+    \\DROP TABLE books;
+    \\
+;
+test "create migration file" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp, const migration_dir, var db_name = try initTestEnvironment(io, allocator);
+    defer {
+        tmp.cleanup();
+        db_name.deinit(allocator);
+    }
+
+    create(io, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration") catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to create migration test: {s}", .{err});
         return e;
     };
 }
-
-test "create migration file" {
+test "can update db" {
     const io = std.testing.io;
-    var wbuff: [4096]u8 = undefined;
+    const allocator = std.testing.allocator;
 
-    var writer = std.Io.File.stderr().writer(io, &wbuff);
-    defer writer.flush() catch {};
+    var tmp, const migration_dir, var db_name = try initTestEnvironment(io, allocator);
+    defer {
+        tmp.cleanup();
+        db_name.deinit(allocator);
+    }
 
-    return runCreateMigrationFileTest(io, std.testing.allocator, &writer.interface);
+    create(io, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration") catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to create migration test: {s}", .{err});
+        return e;
+    };
+
+    var f = try migration_dir.openFile(io, "0000_test_migration.sql", .{ .mode = .write_only });
+    try f.writeStreamingAll(io, TEST_MIGRATION);
+    f.close(io);
+
+    upTo(io, allocator, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), 1) catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to update test: {s}", .{err});
+        return e;
+    };
 }
-test "can update db" {}
-test "can rollback db" {}
-test "can update db by 2 then go back up by two" {}
+test "can rollback db" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp, const migration_dir, var db_name = try initTestEnvironment(io, allocator);
+    defer {
+        tmp.cleanup();
+        db_name.deinit(allocator);
+    }
+
+    create(io, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), "test_migration") catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to create migration test: {s}", .{err});
+        return e;
+    };
+
+    var f = try migration_dir.openFile(io, "0000_test_migration.sql", .{ .mode = .write_only });
+    try f.writeStreamingAll(io, TEST_MIGRATION);
+    f.close(io);
+
+    upTo(io, allocator, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), 1) catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to update test: {s}", .{err});
+        return e;
+    };
+
+    downTo(io, allocator, migration_dir, @as([:0]const u8, @ptrCast(db_name.items)), 0) catch |e| {
+        const err: [:0]const u8 = Sql.err.messageFromError(e) orelse @errorName(e);
+        std.testing.failPrint("Failed to update test: {s}", .{err});
+        return e;
+    };
+}

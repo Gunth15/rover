@@ -124,7 +124,7 @@ pub inline fn binds(stmnt: *Statement, values: anytype) err.Error!void {
 }
 pub fn bind(stmnt: *Statement, idx: usize, value: anytype) err.Error!void {
     return switch (@typeInfo(@TypeOf(value))) {
-        .int, .comptime_int => stmnt.bindInt(idx, value),
+        .int, .comptime_int => stmnt.bindInt(idx, @intCast(value)),
         .float, .comptime_float => stmnt.bindDouble(idx, value),
         .null => stmnt.bindNull(idx),
         .optional => if (value) |v| stmnt.bind(v) else stmnt.bindNull(idx),
