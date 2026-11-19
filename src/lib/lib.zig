@@ -1,4 +1,5 @@
 pub const Util = @import("util/util.zig");
+pub const Argparse = @import("argparse.zig");
 pub const HttpParser = @import("httpparser/httpparser.zig");
 pub const Lua = @import("lua/Lua.zig");
 pub const Router = @import("Router.zig");
@@ -15,6 +16,7 @@ pub const Sqlite = @import("sqlite/sqlite3.zig");
 pub const migrate = @import("migrate/migrate.zig");
 test {
     _ = @import("util/util.zig");
+    _ = @import("argparse.zig");
     _ = @import("httpparser/httpparser.zig");
     _ = @import("sqlite/sqlite3.zig");
     _ = @import("lua/Lua.zig");
